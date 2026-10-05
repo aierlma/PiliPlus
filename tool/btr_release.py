@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 REPO = "aierlma/PiliPlus"
+MAINTENANCE_DIRECTORIES = (".github/", ".vscode/", "tool/", "test/", "docs/")
+MAINTENANCE_FILES = {".gitattributes", ".gitignore", "analysis_options.yaml"}
 
 
 def run(*args, check=True):
@@ -29,6 +31,42 @@ def identity(sha):
     return version, build, f"v{version}-btr.{build}-{sha[:12]}"
 
 
+def application_changes(released, candidate):
+    """Compare app inputs, excluding known documentation and maintenance files.
+
+    Unknown paths remain release-relevant. Git's diff includes deleted files,
+    file modes and submodule changes, not just modified Dart files.
+    """
+    if released is None:
+        return ["initial release"]
+    paths = run("git", "diff", "--name-only", "--no-renames", "-z", released, candidate, "--").stdout.split("\0")
+    return [path for path in paths if path
+            and not path.startswith(MAINTENANCE_DIRECTORIES)
+            and path not in MAINTENANCE_FILES
+            and not ("/" not in path and path.startswith("README") and path.endswith(".md"))]
+
+
+def released_source():
+    release = api("releases/latest")
+    if not release or release["draft"] or release["prerelease"]:
+        return None
+    tag = release["tag_name"]
+    if not re.fullmatch(r"v\d+\.\d+\.\d+-btr\.\d+-[0-9a-f]{12}", tag):
+        raise ValueError("Latest release is not a personal BTR release")
+    assets = {asset["name"] for asset in release["assets"]}
+    if "build-info.json" not in assets or not any(re.fullmatch(r"PiliPlus-BTR-ios-\d+\.\d+\.\d+-btr\.\d+-unsigned\.ipa", name) for name in assets):
+        raise ValueError("Latest release lacks the verified BTR IPA and metadata")
+    ref = f"refs/tags/{tag}"
+    result = run("git", "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
+    if result.returncode:
+        run("git", "fetch", "origin", f"{ref}:{ref}")
+        result = run("git", "rev-parse", "--verify", f"{ref}^{{commit}}")
+    source = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", source) or not tag.endswith(source[:12]):
+        raise ValueError("Release tag differs from its named source commit")
+    return source
+
+
 def title(base, upstream, btr_upstream):
     return f"BTR sync blocked: {base[:12]} {upstream[:12]} {btr_upstream[:12]}"
 
@@ -44,11 +82,10 @@ def plan(retry=False):
     upstream = run("git", "rev-parse", "FETCH_HEAD").stdout.strip()
     run("git", "fetch", "https://github.com/nishuodedui1145-del/PiliPlus.git", "btr")
     btr_upstream = run("git", "rev-parse", "FETCH_HEAD").stdout.strip()
-    _, _, tag = identity(base)
-    release = api(f"releases/tags/{tag}")
+    released = released_source()
     synced = all(run("git", "merge-base", "--is-ancestor", sha, base, check=False).returncode == 0 for sha in (upstream, btr_upstream))
-    published = release and not release["draft"] and not release["prerelease"]
-    changed = not (synced and published)
+    changes = application_changes(released, base)
+    changed = not synced or bool(changes)
     if changed and not retry and blocked(base, upstream, btr_upstream):
         print("Same three source SHAs are blocked by an open issue; skipping automatic retry")
         changed = False
@@ -56,16 +93,17 @@ def plan(retry=False):
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write("".join(f"{key}={value}\n" for key, value in outputs.items()))
     print(json.dumps(outputs))
+    if synced and not changes:
+        print("Both upstreams are included and app inputs match the latest release; no build or release needed")
 
 
-def publish(base, upstream, btr_upstream):
-    info = json.loads(Path("dist/build-info.json").read_text())
-    source = info["source_sha"]
+def validate_candidate(base, upstream, btr_upstream, source):
+    """Verify the pinned history and remote branch before any remote write."""
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("Invalid candidate source SHA")
     run("git", "fetch", "dist/candidate.bundle", "btr-candidate")
     if run("git", "rev-parse", "FETCH_HEAD").stdout.strip() != source:
-        raise ValueError("Candidate bundle differs from verified IPA source")
+        raise ValueError("Candidate bundle differs from the recorded source")
     if run("git", "merge-base", "--is-ancestor", base, source, check=False).returncode:
         raise ValueError("Candidate is not a fast-forward of the planned personal branch")
     if run("git", "merge-base", "--is-ancestor", upstream, source, check=False).returncode:
@@ -74,12 +112,27 @@ def publish(base, upstream, btr_upstream):
         raise ValueError("Candidate does not include the pinned BTR author upstream")
     run("git", "fetch", "origin", "btr")
     if run("git", "rev-parse", "FETCH_HEAD").stdout.strip() != base:
-        raise ValueError("Personal branch moved during the build; refusing publication")
+        raise ValueError("Personal branch moved during validation; refusing promotion")
+
+
+def publish(base, upstream, btr_upstream):
+    info = json.loads(Path("dist/build-info.json").read_text())
+    source = info["source_sha"]
+    validate_candidate(base, upstream, btr_upstream, source)
     version, build, tag = identity(source)
     ipa = next(Path("dist").glob("*.ipa"))
     from verify_btr_ipa import verify
     if verify(ipa, version, build, source, upstream, btr_upstream) != info:
         raise ValueError("Downloaded artifact no longer matches verified IPA metadata")
+    if not application_changes(released_source(), source):
+        # Keep the existing workflow and all validation gates. A docs-only
+        # upstream merge advances history without publishing another package.
+        run("git", "push", "origin", f"{source}:refs/heads/btr")
+        issue = blocked(base, upstream, btr_upstream)
+        if issue:
+            run("gh", "issue", "close", str(issue), "--repo", REPO)
+        print("Synced validated maintenance changes without publishing another IPA")
+        return
     # Make the validated object available for a draft tag, without advancing btr.
     stage = f"builds/validated-{source[:12]}"
     run("git", "push", "origin", f"{source}:refs/heads/{stage}")
