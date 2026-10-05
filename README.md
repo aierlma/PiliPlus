@@ -1,95 +1,39 @@
-<div align="center">
-    <img width="180" height="180" src="assets/images/logo/logo.png">
-    <h1>PiliPlus + BTR 多线程加速</h1>
-    <p>把 <a href="https://github.com/MrTangLuyao/Bilibili-thread-ripper">Bilibili-thread-ripper</a> 的<b>多 Range 并发下载</b>移植进 PiliPlus（Flutter 开发的 B 站第三方客户端）</p>
-</div>
-> 
-> ## ✅ 当前推荐版本：`v2.1.4-btr.15`
-> 
-> **本仓库推荐使用最新版**（已解决 `btr.13`/`btr.14` 的「开着 BTR 视频开不了」问题）：
-> 
-> **安卓**：下载 `PiliPlus-BTR-2.1.4-btr.15-arm64.apk`，直接覆盖安装（与本项目历史版本同一签名，无需卸载）。
-> **iOS**：`PiliPlus-BTR-ios-2.1.4-btr.15-unsigned.ipa` 为未签名包，需自行侧载，见 `docs/btr/iOS-安装指南.md`。
-> 
-> 若新版在你的网络下有问题，可回退 `v2.1.4-btr.12`（同签名，可直接覆盖安装）。
+# PiliPlus BTR — aierlma
 
-> ### ⚠️ 这是个人 fork，不是官方仓库
-> 本仓库是 **[bggRGjQaUbCoE/PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus)** 的个人衍生版，在其基础上**只加了一件事**：
-> 用「本地 HTTP 代理 + 多 Range 并发」解决**海外**看 B 站被单连接 CDN 限速导致的「一直转圈、加载卡死」。
-> 想要官方版本、官方功能说明与官方更新，请前往 **[上游仓库](https://github.com/bggRGjQaUbCoE/PiliPlus)**。
-> 上游的原始 README（含完整功能清单）保留在 **[README-upstream.md](README-upstream.md)**。
+个人维护的 [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus) + BTR 分支，保留 [nishuodedui1145-del/PiliPlus](https://github.com/nishuodedui1145-del/PiliPlus) 的本地 HTTP 代理、多 Range 并发、CDN 选择/竞速、BTR 设置与日志，同时由 GitHub Actions 定期检查并合并官方 `main`。
 
-<br/>
+下载自己的[正式未签名 IPA](https://github.com/aierlma/PiliPlus/releases/latest)，通过 [AltGallery](https://github.com/aierlma/AltGallery) 更新。BTR 开关默认关闭，在「我的 → 设置 → 音视频设置」开启；播放页的「更多 → BTR」提供快设与日志。应用内更新检查也指向本仓库。
 
-## 快速导航
+## 同步与发布
 
-| 我想… | 去哪 |
-|---|---|
-| **下载安装 APK** | **[Releases](../../releases)** —— 下载 `.apk` 直接侧载安装（无需 root） |
-| 看这个加速是什么、怎么用 | **[README-BTR.md](README-BTR.md)** |
-| 看技术设计（11 条关键决定 + 实测依据） | **[docs/btr/DESIGN.md](docs/btr/DESIGN.md)** |
-| 看官方版功能说明 | **[README-upstream.md](README-upstream.md)** ／ [上游仓库](https://github.com/bggRGjQaUbCoE/PiliPlus) |
-| 自己编译 / 跑测试 | 见下方「编译与测试」 |
+默认分支为 `btr`。`BTR upstream sync and iOS release` 在 GitHub 每天检查一次（cron `17 11 * * *`，纽约夏令时 07:17、冬令时 06:17），也可从 Actions 手动运行。GitHub 计划任务可能延迟；每次检查当前最新提交，不积压逐个版本构建。
 
-<br/>
+1. Ubuntu 检查官方最新 SHA、当前个人分支和对应 release；没有变化就结束。
+2. macOS 在临时候选提交中普通合并官方源码，保留 BTR。个人 README 和 `.github/workflows/` 保留个人配置，官方 README 刷新到 `README-upstream.md`。
+3. 检查 BTR 接线、独立 bundle ID 和个人更新地址；生成最新测试镜像，运行自包含 BTR 测试、完整 `flutter analyze`，再构建未签名 iOS IPA。
+4. 解析实际 IPA，验证版本、构建号和最低系统要求；仅通过全部门槛后才快进 `btr` 并发布。若运行期间分支已变化，停止发布，避免覆盖用户提交。
 
-## 和官方版的差别（全部改动）
+并发上限为 1；一次检查最多进行一次构建，不自动重试相同失败输入。合并冲突、SDK 补丁失效、测试或构建失败时，GitHub Actions 标红并在本仓库记录一个带源 SHA 的 issue，保持上一正式 IPA。相同输入的后续计划检查跳过，避免每天浪费构建；修复后提交新代码，或手动勾选 `retry_blocked` 重试。发生冲突仍需维护者处理，持续检查并不保证任何官方变更都能无冲突合并。
 
-- **新增** `lib/services/btr_proxy/`（5 个文件，约 4.6k 行 Dart）：
-  - `proxy_server.dart` —— 本地 HTTP 服务（Range / 206 / HEAD / 1 字节顶头兜底 / 纯数据透传）
-  - `cdn_pool.dart` —— CDN 候选池（大陆·海外分组、粘性优选、死节点拉黑、竞速提示）
-  - `multi_range_downloader.dart` —— 多 Range 分块调度（并发反推、hedge 抢块、慢块补救、单↔多连接切换、失败降级）
-  - `cdn_racer.dart` —— 进视频后**后台**竞速候选节点（TTL 缓存、迟滞、不阻塞起播）
-  - `range_core.dart` —— 阈值与契约（码率 `bw` 按 bit/s 解析后 ÷8 等）
-- **新增** 播放页「更多」里的 **BTR 快设面板**（`lib/pages/setting/widgets/btr_quick_setting.dart`）。
-- **修改** 音视频设置新增 4 项：**BTR 多线程加速 / 并发上限 / 节点分组 / CDN 自动竞速**，以及少量接线
-  （`controller.dart`、`header_control.dart`、`video_settings.dart`、`storage_key.dart`、`storage_pref.dart`）。
-- 除以上内容外，**其余功能与官方版完全一致**（本 fork 基于官方 2.1.4）。
+发布流程会先创建 draft release，上传验证过的包，再推进分支并将 release 改为正式；部分失败留下可恢复的 draft，不替换旧正式版。Tag 和文件名以版本 + Git 历史构建号识别，`build-info.json` 记录源码和官方 SHA、IPA 元数据与 SHA-256。生成过程不执行 IPA。
 
-**播放器零改动**：所有逻辑都在本地代理里，mpv 照常播放；关掉开关即回到原生行为。
+所有定时工作都在 GitHub，不依赖 Codex 会话、Mac 常驻进程或个人访问令牌。日常同步使用仓库内置的 `GITHUB_TOKEN`。保留自己的 CI 配置意味着官方 workflow 改动需单独检查；源码更新仍走普通 Git 合并。此流程不调用 LLM；冲突被明确阻断，可在有 Copilot 权限时交给 Copilot 提议修复，再重新通过相同验证。
 
-<br/>
+停止：在 Actions 禁用 `BTR upstream sync and iOS release`。日志位于该 workflow 的运行页，构建产物保留 14 天；失败 issue 是重复运行的阻断记录。GitHub 对长期没有仓库活动的公共计划任务可能暂停，恢复时重新启用该 workflow。
 
-## 使用要点
+## 构建与测试
 
-1. 装好后：`我的 → 右上齿轮 → 音视频设置`
-   - **BTR 多线程加速** —— 总开关（默认关，需要手动打开）
-   - **BTR 并发上限** —— 4 / 8 / 16 / 32 / 64（默认 8；BTR 官方建议 8~32）
-   - **BTR 节点分组** —— 自动 / 大陆 / 海外
-   - **BTR CDN 自动竞速** —— 进视频后自动选出最快节点（默认开）
-2. 建议把 **缓冲大小** 从 4 调到 **32**、**缓冲时长** 调到 **60** —— 线路抖动时，缓冲比并发更能救体感。
-3. 播放页右上 `⋮ → BTR` 可查看当前最优节点、竞速时间与实测速度。
+Flutter 版本由官方 `pubspec.yaml` 固定，SDK 与 UI 包需要 `lib/scripts/patch.ps1 iOS` 的补丁。标准 macOS GitHub runner 构建，不需要 Apple 签名凭据；产物需自行侧载。
 
-<br/>
-
-## 编译与测试
-
-与官方版相同（Flutter 3.47.4 + Android SDK）：
-
-```bash
-flutter build apk --release --target-platform android-arm64    # 出包
-flutter build apk --debug   --target-platform android-arm64    # 调试版
+```sh
+python3 -m unittest discover -s tool/tests -v
+python3 tool/check_btr.py
+python3 tool/make_btr_mirror.py
+flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
 ```
 
-```bash
-python tool/make_btr_mirror.py                                     # 把代理模块镜像成独立测试台
-flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart   # 码率单位与阈值契约
-flutter test --no-pub test/standalone/btr_cdn_racer_test.dart      # CDN 竞速（本地假 CDN，全自包含）
-flutter test --no-pub test/standalone/btr_proxy_e2e_test.dart      # 端到端字节一致性（需真实直链，见 .example）
-```
+这些测试自包含；需要真实 B 站临时媒体链接的 `btr_proxy_e2e_test.dart` 不在无人值守测试中，不能将自动验证等同于真机播放验收。
 
-<br/>
+## 来源与许可
 
-## 许可
-
-- 本仓库是 PiliPlus 的衍生作品，**整体沿用上游的 GPL-3.0**（见 [LICENSE](LICENSE)，未改动）。
-- 并发下载的原理与默认参数参考 **Bilibili-thread-ripper**（[网页版](https://github.com/MrTangLuyao/Bilibili-thread-ripper) /
-  [桌面版](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop)，**MIT**）；本移植为 Dart 独立实现，未复制其 JS 代码。
-  逐项改动说明与第三方署名见 **[NOTICE](NOTICE)**。
-
-## 声明（沿用上游）
-
-此项目是个人为了兴趣而开发，仅用于学习和测试，请于下载后 24 小时内删除。
-所用 API 皆从官方网站收集，不提供任何破解内容。
-
-致敬原作者：[guozhigq/pilipala](https://github.com/guozhigq/pilipala)、[orz12/PiliPalaX](https://github.com/orz12/PiliPalaX)。
+官方说明：[README-upstream.md](README-upstream.md)。BTR 功能与设计：[README-BTR.md](README-BTR.md)、[docs/btr/DESIGN.md](docs/btr/DESIGN.md)。保留原始 [NOTICE](NOTICE) 署名与 [GPL-3.0 LICENSE](LICENSE)。此 fork 不代表 PiliPlus 官方或 Bilibili。

@@ -406,11 +406,11 @@ abstract final class Api {
   static const String favPgc = '/x/space/bangumi/follow/list';
 
   // 黑名单
-  static const String blackLst = '/x/relation/blacks';
+  static const String blackList = '/x/relation/blacks';
 
   // github 获取最新版
   static const String latestApp =
-      'https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases';
+      'https://api.github.com/repos/aierlma/PiliPlus/releases';
 
   // 多少人在看
   // https://api.bilibili.com/x/player/online/total?aid=913663681&cid=1203559746&bvid=BV1MM4y1s7NZ&ts=56427838

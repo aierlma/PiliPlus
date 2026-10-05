@@ -1,1 +1,2 @@
-*.patch text eol=lf
+# Keep personal documentation during ordinary upstream source merges.
+README.md merge=keepPersonal
