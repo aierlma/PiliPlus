@@ -155,6 +155,8 @@ test*
 # 上游把整个 test/ 忽略了；显式放行我们新增的测试（含镜像测试台产物）
 !test/
 !test/standalone/
+!tool/tests/
+!tool/tests/*.py
 # 但签名直链 fixture 必须排除：里面是带 upsig/deadline/hdnts 的限时下载凭证
 test/fixtures/media_url.txt
 # 内部迭代工作记录（含本机绝对路径、调试日志片段），不对外发布
