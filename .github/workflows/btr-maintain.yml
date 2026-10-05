@@ -1,4 +1,4 @@
-name: BTR upstream sync and iOS release
+name: BTR and PiliPlus sync and iOS release
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       retry_blocked:
-        description: Retry a previously blocked source pair
+        description: Retry a blocked set of source SHAs
         type: boolean
         default: false
 
@@ -29,6 +29,7 @@ jobs:
       changed: ${{ steps.plan.outputs.changed }}
       base: ${{ steps.plan.outputs.base }}
       upstream: ${{ steps.plan.outputs.upstream }}
+      btr_upstream: ${{ steps.plan.outputs.btr_upstream }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -61,11 +62,13 @@ jobs:
         env:
           BASE: ${{ needs.plan.outputs.base }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
+          BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch https://github.com/bggRGjQaUbCoE/PiliPlus.git main
-          python3 tool/prepare_btr_sync.py --base "$BASE" --upstream "$UPSTREAM"
+          git fetch https://github.com/bggRGjQaUbCoE/PiliPlus.git "$UPSTREAM"
+          git fetch https://github.com/nishuodedui1145-del/PiliPlus.git "$BTR_UPSTREAM"
+          python3 tool/prepare_btr_sync.py --base "$BASE" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
           python3 tool/check_btr.py
           python3 -m unittest discover -s tool/tests -v
           git branch btr-candidate HEAD
@@ -89,6 +92,7 @@ jobs:
       - name: Build and verify unsigned IPA
         env:
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
+          BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
           find build/ios/iphoneos/Runner.app/Frameworks -type d -name '*.framework' -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
@@ -98,7 +102,7 @@ jobs:
           app_build="${version##*+}"
           ipa="PiliPlus-BTR-ios-${app_version}-btr.${app_build}-unsigned.ipa"
           (cd package && zip -q -r9 "../dist/$ipa" Payload)
-          python3 tool/verify_btr_ipa.py "dist/$ipa" --version "$app_version" --build "$app_build" --source "$(git rev-parse HEAD)" --upstream "$UPSTREAM" --out dist/build-info.json
+          python3 tool/verify_btr_ipa.py "dist/$ipa" --version "$app_version" --build "$app_build" --source "$(git rev-parse HEAD)" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM" --out dist/build-info.json
       - uses: actions/upload-artifact@v7
         with:
           name: validated-btr-ios
@@ -127,9 +131,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ needs.plan.outputs.base }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
+          BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |
           gh auth setup-git
-          python3 tool/btr_release.py publish --base "$BASE" --upstream "$UPSTREAM"
+          python3 tool/btr_release.py publish --base "$BASE" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
 
   record-failure:
     needs: [plan, build, publish]
@@ -148,4 +153,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ needs.plan.outputs.base }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
-        run: python3 tool/btr_release.py failure --base "$BASE" --upstream "$UPSTREAM"
+          BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
+        run: python3 tool/btr_release.py failure --base "$BASE" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
