@@ -98,6 +98,20 @@ class SyncTests(unittest.TestCase):
 
 
 class PackageTests(unittest.TestCase):
+    def test_ios_captcha_patch_applies_without_unreachable_fallback(self):
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            for name in ("lib/pages/login/geetest/geetest_webview_dialog.dart", "pubspec.yaml"):
+                destination = target / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((root / name).read_bytes())
+            subprocess.run(["git", "apply", str(root / "lib/scripts/geetest_ios.patch")], cwd=target, check=True)
+            source = (target / "lib/pages/login/geetest/geetest_webview_dialog.dart").read_text()
+            body = source.split("static Future<Map<String, dynamic>?> geetest(", 1)[1].split("\n  }", 1)[0]
+            self.assertEqual(body.count("return "), 1)
+            self.assertIn("return GeetestPlugin.geetest(gt, challenge);", body)
+
     def test_promotion_stops_before_remote_write_when_personal_branch_moves(self):
         with tempfile.TemporaryDirectory() as directory:
             previous = Path.cwd()
