@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 
-def verify(path, version, build, source, upstream):
+def verify(path, version, build, source, upstream, btr_upstream):
     with zipfile.ZipFile(path) as archive:
         entries = [name for name in archive.namelist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)]
         apps = [plistlib.loads(archive.read(name)) for name in entries]
@@ -23,16 +23,16 @@ def verify(path, version, build, source, upstream):
     minimum = info.get("MinimumOSVersion")
     if not isinstance(minimum, str) or not re.fullmatch(r"\d+(?:\.\d+)*", minimum):
         raise ValueError("Missing or invalid MinimumOSVersion")
-    return {"source_sha": source, "upstream_sha": upstream, "bundle_id": info["CFBundleIdentifier"], "version": version, "build": build, "min_os_version": minimum, "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {"source_sha": source, "upstream_sha": upstream, "btr_upstream_sha": btr_upstream, "bundle_id": info["CFBundleIdentifier"], "version": version, "build": build, "min_os_version": minimum, "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("ipa", type=Path)
-    for key in ("version", "build", "source", "upstream"):
+    for key in ("version", "build", "source", "upstream", "btr-upstream"):
         parser.add_argument(f"--{key}", required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    data = verify(args.ipa, args.version, args.build, args.source, args.upstream)
+    data = verify(args.ipa, args.version, args.build, args.source, args.upstream, args.btr_upstream)
     args.out.write_text(json.dumps(data, indent=2) + "\n")
     print(json.dumps(data))
