@@ -8,10 +8,14 @@
 
 默认分支为 `btr`。`BTR and PiliPlus sync and iOS release` 在 GitHub 每天检查一次（cron `17 11 * * *`，纽约夏令时 07:17、冬令时 06:17），也可从 Actions 手动运行。GitHub 计划任务可能延迟；每次检查当前最新提交，不积压逐个版本构建。
 
-1. Ubuntu 分别检查 BTR 作者 `nishuodedui1145-del/PiliPlus/btr`、PiliPlus 官方 `bggRGjQaUbCoE/PiliPlus/main` 和当前个人分支的 SHA；两种更新都已纳入且正式包已存在时结束。任何一个来源有新提交，都独立触发候选构建，无需等待另一方更新。
+1. Ubuntu 分别检查 BTR 作者 `nishuodedui1145-del/PiliPlus/btr`、PiliPlus 官方 `bggRGjQaUbCoE/PiliPlus/main` 和当前个人分支的 SHA，并与最近正式 IPA 对应的源码比较。两种更新都已纳入且应用输入没有变化时直接结束；个人分支的每一个维护提交无需另有 release。任何一个来源有新提交，都独立触发候选合并，无需等待另一方更新。
 2. macOS 先普通合并 BTR 作者的新提交，再普通合并官方新提交。BTR 作者落后于官方时，只合并其新增历史，不把新版官方代码覆盖回旧版。任一来源冲突会回滚整个临时候选；个人 README 和 `.github/workflows/` 保留个人配置，两个来源的 README 分别保存为 `README-BTR-upstream.md` 和 `README-upstream.md`。
 3. 检查 BTR 接线、独立 bundle ID 和个人更新地址；生成最新测试镜像，运行自包含 BTR 测试、完整 `flutter analyze`，再构建未签名 iOS IPA。
-4. 解析实际 IPA，验证版本、构建号和最低系统要求；仅通过全部门槛后才快进 `btr` 并发布。若运行期间分支已变化，停止发布，避免覆盖用户提交。
+4. 解析实际 IPA，验证版本、构建号和最低系统要求；仅通过全部门槛后才快进 `btr`。发布脚本再比较最近正式版的应用输入：应用变化才发布；纯维护变化只同步历史，不上传或公开另一个 IPA。若运行期间分支已变化，停止推进，避免覆盖用户提交。
+
+发布按应用输入去重，忽略根目录 `README*.md`、`docs/`、`test/`、`tool/`、`.github/`、`.vscode/` 以及 `.gitattributes`、`.gitignore`、`analysis_options.yaml` 的维护变化。Dart 代码、资源、平台文件、`lib/scripts/` 中的构建补丁、依赖锁文件、SDK/版本配置及未知路径仍触发完整发布门槛。构建号沿用 Git 历史提交计数，因此数字可能跳跃，并不表示中间发布了多个 App 版本。`retry_blocked` 只重试失败输入，不强制为相同应用内容再发一版。编译命令或打包行为若在 `.github/` 或 `tool/` 中修改，需要维护者同时调整应用构建输入。沿用现有 workflow，新的纯维护上游历史仍完整验证，但只同步、不发版；已同步的个人维护提交在计划阶段直接跳过构建。
+
+例如 5485 到 5488 增加的是三个维护提交，应用代码、资源和依赖相同；按此规则不会再次发布功能相同的 IPA。已有正式附件保留，不回撤用户已安装的包。
 
 并发上限为 1；一次检查最多进行一次构建，不自动重试相同的个人、官方、BTR 三个 SHA 输入。合并冲突、SDK 补丁失效、测试或构建失败时，GitHub Actions 标红并在本仓库记录一个带源 SHA 的 issue，保持上一正式 IPA。相同三个 SHA 的后续计划检查跳过，避免每天浪费构建；修复后提交新代码，或手动勾选 `retry_blocked` 重试。发生冲突仍需维护者处理，持续检查并不保证两个来源的任何变更都能无冲突合并。
 

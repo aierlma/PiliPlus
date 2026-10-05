@@ -156,6 +156,72 @@ class SyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "moved"):
             prepare_btr_sync.prepare(self.base, "0" * 40, self.author_base)
 
+    def test_maintenance_commits_do_not_change_released_app_inputs(self):
+        for name in ("README.md", "README-BTR-upstream.md", ".github/workflows/build.yml", "tool/release.py", "test/fixture.dart", "docs/design.md", "analysis_options.yaml"):
+            path = Path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("maintenance update")
+        git("add", ".")
+        git("commit", "-m", "maintenance only")
+        candidate = git("rev-parse", "HEAD")
+        self.assertNotEqual(self.base, candidate)
+        self.assertEqual(btr_release.application_changes(self.base, candidate), [])
+        self.assertNotEqual(git("rev-list", "--count", self.base), git("rev-list", "--count", candidate))
+
+    def test_app_dependencies_assets_build_scripts_and_unknown_files_require_release(self):
+        names = ("lib/player.dart", "lib/scripts/patch.ps1", "assets/icon.png", "ios/Runner/Info.plist", "pubspec.yaml", "pubspec.lock", "new-build-input")
+        for name in names:
+            path = Path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("new app input")
+        Path("btr.dart").unlink()
+        git("add", "-A")
+        git("commit", "-m", "app changes")
+        self.assertEqual(set(btr_release.application_changes(self.base, git("rev-parse", "HEAD"))), set(names) | {"btr.dart"})
+
+    def stage_sync_candidate(self, remote, source):
+        Path("pubspec.yaml").write_text("version: 2.1.6+1\n")
+        git("add", "pubspec.yaml")
+        git("commit", "-m", "application version")
+        self.base = git("rev-parse", "HEAD")
+        git("init", "--bare", remote)
+        git("remote", "add", "origin", remote)
+        git("push", "origin", f"{self.base}:refs/heads/btr")
+        upstream = self.official(source)
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        Path("dist").mkdir()
+        git("branch", "btr-candidate", candidate)
+        git("bundle", "create", "dist/candidate.bundle", "btr-candidate")
+        version, build, _ = btr_release.identity(candidate)
+        ipa = Path("dist/release.ipa")
+        with zipfile.ZipFile(ipa, "w") as archive:
+            archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps({"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": version, "CFBundleVersion": build, "MinimumOSVersion": "15.0"}))
+        info = verify_btr_ipa.verify(ipa, version, build, candidate, upstream, self.author_base)
+        Path("dist/build-info.json").write_text(json.dumps(info))
+        return upstream, candidate
+
+    def test_docs_only_upstream_sync_advances_history_without_release(self):
+        with tempfile.TemporaryDirectory() as remote:
+            upstream, candidate = self.stage_sync_candidate(remote, "shared source")
+            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "blocked", return_value=None), patch.object(btr_release, "api", side_effect=AssertionError("No release should be created")):
+                btr_release.publish(self.base, upstream, self.author_base)
+            self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], candidate)
+            self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
+            self.assertEqual(btr_release.application_changes(self.base, candidate), [])
+
+    def test_app_update_cannot_skip_ipa_verification(self):
+        with tempfile.TemporaryDirectory() as remote:
+            upstream, candidate = self.stage_sync_candidate(remote, "new app source")
+            info_path = Path("dist/build-info.json")
+            info = json.loads(info_path.read_text())
+            info["sha256"] = "invalid"
+            info_path.write_text(json.dumps(info))
+            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "blocked", return_value=None):
+                with self.assertRaisesRegex(ValueError, "verified IPA metadata"):
+                    btr_release.publish(self.base, upstream, self.author_base)
+            self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], self.base)
+            self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
+
 
 class PackageTests(unittest.TestCase):
     def test_ios_captcha_patch_applies_without_unreachable_fallback(self):
@@ -222,7 +288,7 @@ class PackageTests(unittest.TestCase):
             for draft in (False, True):
                 fetch_heads = iter(("b" * 40, "c" * 40))
                 output.write_text("")
-                with patch.dict(os.environ, GITHUB_OUTPUT=str(output)), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "identity", return_value=("2.1.6", "5483", "tag")), patch.object(btr_release, "api", return_value={"draft": draft, "prerelease": False}), patch.object(btr_release, "blocked", return_value=None):
+                with patch.dict(os.environ, GITHUB_OUTPUT=str(output)), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "released_source", return_value=None if draft else "a" * 40), patch.object(btr_release, "application_changes", return_value=["initial release"] if draft else []), patch.object(btr_release, "blocked", return_value=None):
                     btr_release.plan()
                 self.assertIn(f"changed={str(draft).lower()}", output.read_text())
 
@@ -238,7 +304,7 @@ class PackageTests(unittest.TestCase):
                         return subprocess.CompletedProcess(args, 0, next(fetch_heads), "")
                     code = int(args[3] == updated) if args[1:3] == ("merge-base", "--is-ancestor") else 0
                     return subprocess.CompletedProcess(args, code, "", "")
-                with patch.dict(os.environ, GITHUB_OUTPUT=str(output)), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "identity", return_value=("2.1.6", "5483", "tag")), patch.object(btr_release, "api", return_value={"draft": False, "prerelease": False}), patch.object(btr_release, "blocked", return_value=None):
+                with patch.dict(os.environ, GITHUB_OUTPUT=str(output)), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "released_source", return_value="a" * 40), patch.object(btr_release, "application_changes", return_value=[]), patch.object(btr_release, "blocked", return_value=None):
                     btr_release.plan()
                 self.assertIn("changed=true", output.read_text())
                 self.assertIn("btr_upstream=" + "c" * 40, output.read_text())
@@ -263,6 +329,34 @@ class PackageTests(unittest.TestCase):
 
     def test_btr_input_change_has_a_distinct_failure_key(self):
         self.assertNotEqual(btr_release.title("a" * 40, "b" * 40, "c" * 40), btr_release.title("a" * 40, "b" * 40, "d" * 40))
+
+    def test_maintenance_head_without_its_own_release_skips_even_on_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            fetch_heads = iter(("b" * 40, "c" * 40))
+            def command(*args, **kwargs):
+                if args[1:3] == ("rev-parse", "HEAD"):
+                    value = "a" * 40
+                elif args[1:3] == ("rev-parse", "FETCH_HEAD"):
+                    value = next(fetch_heads)
+                else:
+                    value = ""
+                return subprocess.CompletedProcess(args, 0, value, "")
+            with patch.dict(os.environ, GITHUB_OUTPUT=str(output)), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "released_source", return_value="d" * 40), patch.object(btr_release, "application_changes", return_value=[]):
+                btr_release.plan(retry=True)
+            self.assertIn("changed=false", output.read_text())
+
+    def test_release_tag_must_match_source_before_skipping(self):
+        release = {"draft": False, "prerelease": False, "tag_name": "v2.1.6-btr.5488-" + "a" * 12, "assets": [{"name": "build-info.json"}, {"name": "PiliPlus-BTR-ios-2.1.6-btr.5488-unsigned.ipa"}]}
+        with patch.object(btr_release, "api", return_value=release), patch.object(btr_release, "run", return_value=subprocess.CompletedProcess([], 0, "b" * 40, "")):
+            with self.assertRaisesRegex(ValueError, "named source commit"):
+                btr_release.released_source()
+
+    def test_unverified_release_is_not_used_to_skip_validation(self):
+        release = {"draft": False, "prerelease": False, "tag_name": "v2.1.6-btr.5488-" + "a" * 12, "assets": []}
+        with patch.object(btr_release, "api", return_value=release):
+            with self.assertRaisesRegex(ValueError, "verified BTR IPA"):
+                btr_release.released_source()
 
 
 if __name__ == "__main__":
