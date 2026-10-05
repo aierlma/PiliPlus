@@ -1,0 +1,151 @@
+name: BTR upstream sync and iOS release
+
+on:
+  schedule:
+    - cron: '17 11 * * *'
+  workflow_dispatch:
+    inputs:
+      retry_blocked:
+        description: Retry a previously blocked source pair
+        type: boolean
+        default: false
+
+concurrency:
+  group: btr-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.repository == 'aierlma/PiliPlus'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+      base: ${{ steps.plan.outputs.base }}
+      upstream: ${{ steps.plan.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: btr
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETRY_BLOCKED: ${{ inputs.retry_blocked }}
+        run: |
+          if [[ "$RETRY_BLOCKED" == true ]]; then
+            python3 tool/btr_release.py plan --retry
+          else
+            python3 tool/btr_release.py plan
+          fi
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.changed == 'true'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare candidate merge
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+          UPSTREAM: ${{ needs.plan.outputs.upstream }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch https://github.com/bggRGjQaUbCoE/PiliPlus.git main
+          python3 tool/prepare_btr_sync.py --base "$BASE" --upstream "$UPSTREAM"
+          python3 tool/check_btr.py
+          python3 -m unittest discover -s tool/tests -v
+          git branch btr-candidate HEAD
+          mkdir -p dist
+          git bundle create dist/candidate.bundle btr-candidate
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+      - name: Apply current upstream SDK patches
+        shell: pwsh
+        run: lib/scripts/patch.ps1 iOS
+      - name: Verify BTR and complete application
+        run: |
+          python3 tool/make_btr_mirror.py
+          flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
+          flutter analyze --no-pub
+      - name: Set version and build number
+        shell: pwsh
+        run: lib/scripts/build.ps1
+      - name: Build and verify unsigned IPA
+        env:
+          UPSTREAM: ${{ needs.plan.outputs.upstream }}
+        run: |
+          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+          find build/ios/iphoneos/Runner.app/Frameworks -type d -name '*.framework' -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
+          mkdir -p package/Payload
+          ditto build/ios/iphoneos/Runner.app package/Payload/Runner.app
+          app_version="${version%+*}"
+          app_build="${version##*+}"
+          ipa="PiliPlus-BTR-ios-${app_version}-btr.${app_build}-unsigned.ipa"
+          (cd package && zip -q -r9 "../dist/$ipa" Payload)
+          python3 tool/verify_btr_ipa.py "dist/$ipa" --version "$app_version" --build "$app_build" --source "$(git rev-parse HEAD)" --upstream "$UPSTREAM" --out dist/build-info.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: validated-btr-ios
+          path: dist/
+          retention-days: 14
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: validated-btr-ios
+          path: dist/
+      - name: Publish only the validated candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ needs.plan.outputs.base }}
+          UPSTREAM: ${{ needs.plan.outputs.upstream }}
+        run: |
+          gh auth setup-git
+          python3 tool/btr_release.py publish --base "$BASE" --upstream "$UPSTREAM"
+
+  record-failure:
+    needs: [plan, build, publish]
+    if: ${{ always() && needs.plan.outputs.changed == 'true' && (needs.build.result == 'failure' || needs.publish.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ needs.plan.outputs.base }}
+          UPSTREAM: ${{ needs.plan.outputs.upstream }}
+        run: python3 tool/btr_release.py failure --base "$BASE" --upstream "$UPSTREAM"
