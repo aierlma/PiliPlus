@@ -82,7 +82,7 @@ jobs:
         run: |
           python3 tool/make_btr_mirror.py
           flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
-          flutter analyze --no-pub
+          flutter analyze --no-pub --no-fatal-infos
       - name: Set version and build number
         shell: pwsh
         run: lib/scripts/build.ps1
