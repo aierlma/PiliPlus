@@ -115,6 +115,34 @@ def validate_candidate(base, upstream, btr_upstream, source):
         raise ValueError("Personal branch moved during validation; refusing promotion")
 
 
+def validate_release_progress(info, previous):
+    """A package must be newer in both SideStore's stable version and build."""
+    def triple(value):
+        if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+            raise ValueError("Invalid numeric iOS release version")
+        return tuple(map(int, value.split(".")))
+
+    if previous.get("bundle_id") != info["bundle_id"]:
+        raise ValueError("Previous release has a different bundle identifier")
+    if triple(info["version"]) <= triple(previous.get("version")):
+        raise ValueError("iOS release version must increase; refusing a duplicate or downgrade")
+    old_build = previous.get("build")
+    if not isinstance(old_build, str) or not re.fullmatch(r"[1-9]\d*", old_build):
+        raise ValueError("Invalid previous build number")
+    if int(info["build"]) <= int(old_build):
+        raise ValueError("Build number must increase; refusing a duplicate or downgrade")
+
+
+def check_latest_release_progress(info):
+    release = api("releases/latest")
+    if release is None:
+        return
+    path = Path("dist/previous-build-info.json")
+    run("gh", "release", "download", release["tag_name"], "--repo", REPO,
+        "--pattern", "build-info.json", "--output", str(path), "--clobber")
+    validate_release_progress(info, json.loads(path.read_text()))
+
+
 def publish(base, upstream, btr_upstream):
     info = json.loads(Path("dist/build-info.json").read_text())
     source = info["source_sha"]
@@ -133,13 +161,16 @@ def publish(base, upstream, btr_upstream):
             run("gh", "issue", "close", str(issue), "--repo", REPO)
         print("Synced validated maintenance changes without publishing another IPA")
         return
+    # Reject version collisions before staging a branch, creating a release or
+    # advancing the default branch. This also catches upstream version resets.
+    check_latest_release_progress(info)
     # Make the validated object available for a draft tag, without advancing btr.
     stage = f"builds/validated-{source[:12]}"
     run("git", "push", "origin", f"{source}:refs/heads/{stage}")
     existing = api(f"releases/tags/{tag}")
     if existing and not existing["draft"]:
         raise ValueError("Release already published; refusing to replace its assets")
-    body = f"PiliPlus BTR {version}, build {build}\n\nSource: {source}\nOfficial PiliPlus upstream: {upstream}\nBTR author upstream: {btr_upstream}\nMinimum iOS: {info['min_os_version']}\nIPA SHA-256: {info['sha256']}\n\nBoth source histories are included. BTR tests, static analysis and unsigned iOS build passed. Sideloading is required."
+    body = f"PiliPlus BTR {info['version']}, build {build}\nBased on PiliPlus {version}\n\nSource: {source}\nOfficial PiliPlus upstream: {upstream}\nBTR author upstream: {btr_upstream}\nMinimum iOS: {info['min_os_version']}\nIPA SHA-256: {info['sha256']}\n\nBoth source histories are included. BTR tests, static analysis and unsigned iOS build passed. Sideloading is required. The numeric iOS version includes the personal build number so SideStore can offer this package as a source update."
     Path("dist/release-notes.md").write_text(body)
     if not existing:
         run("gh", "release", "create", tag, str(ipa), "dist/build-info.json", "--repo", REPO, "--draft", "--target", source, "--title", f"PiliPlus BTR {tag}", "--notes-file", "dist/release-notes.md")

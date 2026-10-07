@@ -4,8 +4,12 @@ import hashlib
 import json
 import plistlib
 import re
+import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib/scripts"))
+from btr_ios_version import release_version
 
 
 def verify(path, version, build, source, upstream, btr_upstream):
@@ -16,14 +20,15 @@ def verify(path, version, build, source, upstream, btr_upstream):
         if len(apps) != 1:
             raise ValueError("IPA must have exactly one main application")
         info = apps[0]
-    expected = {"CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": version, "CFBundleVersion": build}
+    ios_version = release_version(version, build)
+    expected = {"CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": ios_version, "CFBundleVersion": build, "PiliPlusUpstreamVersion": version}
     for key, value in expected.items():
         if info.get(key) != value:
             raise ValueError(f"Unexpected {key}: {info.get(key)}; expected {value}")
     minimum = info.get("MinimumOSVersion")
     if not isinstance(minimum, str) or not re.fullmatch(r"\d+(?:\.\d+)*", minimum):
         raise ValueError("Missing or invalid MinimumOSVersion")
-    return {"source_sha": source, "upstream_sha": upstream, "btr_upstream_sha": btr_upstream, "bundle_id": info["CFBundleIdentifier"], "version": version, "build": build, "min_os_version": minimum, "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {"source_sha": source, "upstream_sha": upstream, "btr_upstream_sha": btr_upstream, "bundle_id": info["CFBundleIdentifier"], "version": ios_version, "upstream_version": version, "build": build, "min_os_version": minimum, "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 if __name__ == "__main__":

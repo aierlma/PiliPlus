@@ -17,6 +17,12 @@
 
 例如 5485 到 5488 增加的是三个维护提交，应用代码、资源和依赖相同；按此规则不会再次发布功能相同的 IPA。已有正式附件保留，不回撤用户已安装的包。
 
+个人正式 iOS 包使用 `官方主版本.官方次版本.个人构建号` 作为 `CFBundleShortVersionString`，例如基于官方 `2.1.6` 的 build 5502 显示为 `2.1.5502`。这符合 iOS 的三段数字版本格式，也让 SideStore 的正式版检查在官方未改 `2.1.6`、但实际源码有更新时识别新包。`CFBundleVersion` 仍为 Git 历史计数；官方原始版本保存在 IPA 的 `PiliPlusUpstreamVersion`、`build-info.json` 的 `upstream_version`、应用内版本说明与 Release 说明中，Tag/附件名继续沿用官方版本与个人构建号。版本写入仅在构建临时工作区发生，不修改上游 `pubspec.yaml` 中的版本策略。AltGallery 读取实际 IPA 的版本，不虚构订阅版本；相同包不会一直提示更新。维护变化仍由上面的应用输入规则排除。
+
+发布前下载上一正式版的 `build-info.json`，要求新 IPA 的三段版本和构建号都严格递增；重复、回退或上游改版本策略导致新版本变低时，在任何 Release 写入和分支推进前阻断。普通快进历史、并发互斥及推进前再次核对远端 SHA 共同防止并行候选发布同一个版本。
+
+在 SideStore 添加个人 BTR 源后，从该源安装或关联 PiliPlus BTR；刷新源后，已安装的旧版会在 My Apps 出现 Update，可直接下载、签名并覆盖更新，无需手动下载 IPA。Refresh 只续签，不能代替 Update。通知横幅还需要 SideStore 通知权限及 iOS 允许的后台检查；GitHub 和订阅不会向设备实时推送。
+
 并发上限为 1；一次检查最多进行一次构建，不自动重试相同的个人、官方、BTR 三个 SHA 输入。合并冲突、SDK 补丁失效、测试或构建失败时，GitHub Actions 标红并在本仓库记录一个带源 SHA 的 issue，保持上一正式 IPA。相同三个 SHA 的后续计划检查跳过，避免每天浪费构建；修复后提交新代码，或手动勾选 `retry_blocked` 重试。发生冲突仍需维护者处理，持续检查并不保证两个来源的任何变更都能无冲突合并。
 
 发布流程会先创建 draft release，上传验证过的包，再推进分支并将 release 改为正式；部分失败留下可恢复的 draft，不替换旧正式版。Tag 以版本 + Git 历史构建号 + 源码 SHA 识别，附件名包含版本与构建号，`build-info.json` 记录个人源码、PiliPlus 官方和 BTR 作者三个 SHA、IPA 元数据与 SHA-256。生成过程不执行 IPA。
@@ -28,6 +34,8 @@
 ## 构建与测试
 
 Flutter 版本由官方 `pubspec.yaml` 固定，SDK 与 UI 包需要 `lib/scripts/patch.ps1 iOS` 的补丁。标准 macOS GitHub runner 构建，不需要 Apple 签名凭据；产物需自行侧载。
+
+本地构建个人正式 iOS 包时运行 `pwsh lib/scripts/build.ps1 btr-ios`，应用同样的 iOS 版本写入；其他平台沿用原版本生成方式。
 
 ```sh
 python3 -m unittest discover -s tool/tests -v
