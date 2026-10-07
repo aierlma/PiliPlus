@@ -73,6 +73,15 @@ android {
                     value = "PiliPlus dev",
                 )
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            applicationIdSuffix = ".debug"
+        }
+        release {
             // BTR 分发变体：与官方版（com.example.piliplus）共存、且无 DEBUG 角标
             // 构建：cd android && ./gradlew assembleRelease -Pbtr
             if (project.hasProperty("btr")) {
@@ -83,13 +92,6 @@ android {
                     value = "PiliPlus BTR",
                 )
             }
-//            proguardFiles(
-//                getDefaultProguardFile("proguard-android-optimize.txt"),
-//                "proguard-rules.pro"
-//            )
-        }
-        debug {
-            applicationIdSuffix = ".debug"
         }
     }
 
