@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import prepare_btr_sync
 import verify_btr_ipa
 import btr_release
+import btr_ios_version
 
 
 def git(*args):
@@ -195,7 +196,7 @@ class SyncTests(unittest.TestCase):
         version, build, _ = btr_release.identity(candidate)
         ipa = Path("dist/release.ipa")
         with zipfile.ZipFile(ipa, "w") as archive:
-            archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps({"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": version, "CFBundleVersion": build, "MinimumOSVersion": "15.0"}))
+            archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps({"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": btr_ios_version.release_version(version, build), "CFBundleVersion": build, "PiliPlusUpstreamVersion": version, "MinimumOSVersion": "15.0"}))
         info = verify_btr_ipa.verify(ipa, version, build, candidate, upstream, self.author_base)
         Path("dist/build-info.json").write_text(json.dumps(info))
         return upstream, candidate
@@ -220,6 +221,24 @@ class SyncTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "verified IPA metadata"):
                     btr_release.publish(self.base, upstream, self.author_base)
             self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], self.base)
+            self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
+
+
+    def test_version_collision_stops_before_any_remote_promotion(self):
+        with tempfile.TemporaryDirectory() as remote:
+            upstream, candidate = self.stage_sync_candidate(remote, "new app source")
+            info = json.loads(Path("dist/build-info.json").read_text())
+            original_run = btr_release.run
+            def command(*args, **kwargs):
+                if args[:3] == ("gh", "release", "download"):
+                    Path("dist/previous-build-info.json").write_text(json.dumps(info))
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                return original_run(*args, **kwargs)
+            with patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "api", return_value={"tag_name": "previous"}), patch.object(btr_release, "released_source", return_value=self.base):
+                with self.assertRaisesRegex(ValueError, "version must increase"):
+                    btr_release.publish(self.base, upstream, self.author_base)
+            self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], self.base)
+            self.assertEqual(git("ls-remote", "origin", "refs/heads/builds/*"), "")
             self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
 
 
@@ -259,21 +278,81 @@ class PackageTests(unittest.TestCase):
     def test_actual_metadata_and_bundle_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "release.ipa"
-            info = {"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": "2.1.6", "CFBundleVersion": "5483", "MinimumOSVersion": "15.0"}
+            info = {"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": "2.1.5483", "CFBundleVersion": "5483", "PiliPlusUpstreamVersion": "2.1.6", "MinimumOSVersion": "15.0"}
             with zipfile.ZipFile(path, "w") as archive:
                 archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
                 archive.writestr("Payload/Runner.app/PlugIns/Other.app/Info.plist", plistlib.dumps({"CFBundlePackageType": "APPL"}))
             data = verify_btr_ipa.verify(path, "2.1.6", "5483", "a" * 40, "b" * 40, "c" * 40)
             self.assertEqual(data["min_os_version"], "15.0")
+            self.assertEqual(data["version"], "2.1.5483")
+            self.assertEqual(data["upstream_version"], "2.1.6")
             self.assertEqual(data["btr_upstream_sha"], "c" * 40)
             self.assertEqual(len(data["sha256"]), 64)
-            with self.assertRaisesRegex(ValueError, "CFBundleVersion"):
+            with self.assertRaisesRegex(ValueError, "CFBundleShortVersionString"):
                 verify_btr_ipa.verify(path, "2.1.6", "5416", "a" * 40, "b" * 40, "c" * 40)
             info["CFBundleIdentifier"] = "com.example.piliplus"
             with zipfile.ZipFile(path, "w") as archive:
                 archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps(info))
             with self.assertRaisesRegex(ValueError, "CFBundleIdentifier"):
                 verify_btr_ipa.verify(path, "2.1.6", "5483", "a" * 40, "b" * 40, "c" * 40)
+
+    def test_ios_stamp_preserves_upstream_version_and_other_bundle_metadata(self):
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Info.plist"
+            original = plistlib.loads((root / "ios/Runner/Info.plist").read_bytes())
+            path.write_bytes(plistlib.dumps(original))
+            self.assertEqual(btr_ios_version.stamp(path, "2.1.6", "5502"), "2.1.5502")
+            info = plistlib.loads(path.read_bytes())
+            self.assertEqual(info.pop("CFBundleShortVersionString"), "2.1.5502")
+            self.assertEqual(info.pop("PiliPlusUpstreamVersion"), "2.1.6")
+            original.pop("CFBundleShortVersionString")
+            self.assertEqual(info, original)
+            self.assertEqual(btr_ios_version.stamp(path, "2.1.6", "5502"), "2.1.5502")
+
+    def test_stable_versions_increase_even_when_upstream_version_is_unchanged(self):
+        # SideStore 6032424a compares major/minor/patch for stable releases.
+        triple = lambda value: tuple(map(int, value.split(".")))
+        first = btr_ios_version.release_version("2.1.6", "5502")
+        next_build = btr_ios_version.release_version("2.1.6", "5508")
+        self.assertGreater(triple(first), triple("2.1.6"))
+        self.assertGreater(triple(next_build), triple(first))
+        self.assertGreater(triple(btr_ios_version.release_version("2.2.0", "5510")), triple(next_build))
+
+    def test_release_guard_allows_legacy_upgrade_but_rejects_same_version_or_reset(self):
+        previous = {"bundle_id": "com.example.piliplus.btr", "version": "2.1.6", "build": "5500"}
+        current = dict(previous, version="2.1.5502", build="5502")
+        btr_release.validate_release_progress(current, previous)
+        btr_release.validate_release_progress(dict(current, version="2.1.5508", build="5508"), current)
+        for value in (current, dict(current, version="2.1.5501", build="5503"), dict(current, version="2.0.5508", build="5508"), dict(current, version="2.2.0", build="5502")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                btr_release.validate_release_progress(value, current)
+
+    def test_invalid_versions_and_other_bundle_are_rejected(self):
+        for upstream, build in (("2.1.6-btr", "5502"), ("2.1", "5502"), ("2.1.6", "0"), ("2.1.6", "5502.1")):
+            with self.subTest(upstream=upstream, build=build), self.assertRaises(ValueError):
+                btr_ios_version.release_version(upstream, build)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Info.plist"
+            original = plistlib.dumps({"CFBundleIdentifier": "com.example.piliplus"})
+            path.write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "different application"):
+                btr_ios_version.stamp(path, "2.1.6", "5502")
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_legacy_short_version_and_wrong_upstream_metadata_block_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.ipa"
+            info = {"CFBundlePackageType": "APPL", "CFBundleIdentifier": "com.example.piliplus.btr", "CFBundleShortVersionString": "2.1.6", "CFBundleVersion": "5502", "PiliPlusUpstreamVersion": "2.1.6", "MinimumOSVersion": "15.0"}
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps(info))
+            with self.assertRaisesRegex(ValueError, "CFBundleShortVersionString"):
+                verify_btr_ipa.verify(path, "2.1.6", "5502", "a" * 40, "b" * 40, "c" * 40)
+            info.update(CFBundleShortVersionString="2.1.5502", PiliPlusUpstreamVersion="2.1.7")
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("Payload/Runner.app/Info.plist", plistlib.dumps(info))
+            with self.assertRaisesRegex(ValueError, "PiliPlusUpstreamVersion"):
+                verify_btr_ipa.verify(path, "2.1.6", "5502", "a" * 40, "b" * 40, "c" * 40)
 
     def test_published_release_is_not_treated_as_a_draft(self):
         # A published version skips repeat builds; a draft requires recovery.

@@ -28,6 +28,15 @@ try {
 
     $updatedContent | Set-Content -Path 'pubspec.yaml' -Encoding UTF8
 
+    # Keep the upstream app version, but give each personal iOS package a
+    # distinct numeric release version for SideStore's stable update check.
+    if ($Arg -eq 'btr-ios' -or $env:GITHUB_WORKFLOW -eq 'BTR and PiliPlus sync and iOS release') {
+        python3 lib/scripts/btr_ios_version.py $versionName "$versionCode"
+        if ($LASTEXITCODE -ne 0) {
+            throw 'BTR iOS version stamping failed'
+        }
+    }
+
     $buildTime = [int]([DateTimeOffset]::Now.ToUnixTimeSeconds())
 
     $data = @{
