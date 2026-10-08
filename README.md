@@ -23,6 +23,8 @@
 
 在 SideStore 添加个人 BTR 源后，从该源安装或关联 PiliPlus BTR；刷新源后，已安装的旧版会在 My Apps 出现 Update，可直接下载、签名并覆盖更新，无需手动下载 IPA。Refresh 只续签，不能代替 Update。通知横幅还需要 SideStore 通知权限及 iOS 允许的后台检查；GitHub 和订阅不会向设备实时推送。
 
+个人 iOS 版的应用内更新检查按构建号比较正式个人 IPA，并核对 AltGallery 独立 BTR 源中的版本、构建号和下载链接。只有订阅源已经收录的较新包才弹出更新提示；同一个包不会因为 GitHub Release 创建时间晚于编译时间重复提醒。GitHub 已发布而源尚未刷新时，自动检查保持安静，手动检查说明正在等待订阅同步。AltGallery 沿用独立的每 6 小时生成任务，GitHub 可能延迟或丢弃计划任务，因此发布 IPA 与订阅可用并非即时完成；维护者可手动运行 AltGallery 的生成 workflow，无需用户卸载或手动下载 IPA。该检查不改应用标识、签名或用户数据，也不更改其他平台的更新逻辑。
+
 并发上限为 1；一次检查最多进行一次构建，不自动重试相同的个人、官方、BTR 三个 SHA 输入。合并冲突、SDK 补丁失效、测试或构建失败时，GitHub Actions 标红并在本仓库记录一个带源 SHA 的 issue，保持上一正式 IPA。相同三个 SHA 的后续计划检查跳过，避免每天浪费构建；修复后提交新代码，或手动勾选 `retry_blocked` 重试。发生冲突仍需维护者处理，持续检查并不保证两个来源的任何变更都能无冲突合并。
 
 发布流程会先创建 draft release，上传验证过的包，再推进分支并将 release 改为正式；部分失败留下可恢复的 draft，不替换旧正式版。Tag 以版本 + Git 历史构建号 + 源码 SHA 识别，附件名包含版本与构建号，`build-info.json` 记录个人源码、PiliPlus 官方和 BTR 作者三个 SHA、IPA 元数据与 SHA-256。生成过程不执行 IPA。
@@ -39,6 +41,7 @@ Flutter 版本由官方 `pubspec.yaml` 固定，SDK 与 UI 包需要 `lib/script
 
 ```sh
 python3 -m unittest discover -s tool/tests -v
+dart tool/tests/btr_update_test.dart
 python3 tool/check_btr.py
 python3 tool/make_btr_mirror.py
 flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
