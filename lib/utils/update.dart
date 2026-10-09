@@ -1,3 +1,4 @@
+import 'dart:convert' show jsonDecode;
 import 'dart:io' show Platform;
 
 import 'package:PiliPlus/build_config.dart';
@@ -6,6 +7,7 @@ import 'package:PiliPlus/http/api.dart';
 import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/http/init.dart';
 import 'package:PiliPlus/utils/accounts/account.dart';
+import 'package:PiliPlus/utils/btr_update.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
@@ -34,10 +36,40 @@ abstract final class Update {
         }
         return;
       }
-      final data = res.data[0];
-      final int latest =
-          DateTime.parse(data['created_at']).millisecondsSinceEpoch ~/ 1000;
-      if (BuildConfig.buildTime >= latest) {
+      late final Map<String, dynamic> data;
+      late final bool hasUpdate;
+      if (Platform.isIOS) {
+        final releases = BtrUpdate.publishedReleases(res.data);
+        if (releases.first.build <= BuildConfig.versionCode) {
+          if (!isAuto) SmartDialog.showToast('已是最新版本');
+          return;
+        }
+        final source = await Request().get(
+          BtrUpdate.sourceUrl,
+          options: Options(extra: {'account': const NoAccount()}),
+        );
+        final release = BtrUpdate.availableRelease(
+          source.data is String
+              ? jsonDecode(source.data as String)
+              : source.data,
+          releases,
+          BuildConfig.versionCode,
+        );
+        if (release == null) {
+          if (!isAuto) {
+            SmartDialog.showToast('新版本尚未同步至 SideStore 订阅源，请稍后刷新订阅');
+          }
+          return;
+        }
+        data = release.data;
+        hasUpdate = true;
+      } else {
+        data = Map<String, dynamic>.from(res.data[0] as Map);
+        final latest =
+            DateTime.parse(data['created_at']).millisecondsSinceEpoch ~/ 1000;
+        hasUpdate = BuildConfig.buildTime < latest;
+      }
+      if (!hasUpdate) {
         if (!isAuto) {
           SmartDialog.showToast('已是最新版本');
         }
@@ -64,9 +96,11 @@ abstract final class Update {
                       ),
                       const SizedBox(height: 8),
                       Text('${data['body']}'),
+                      if (Platform.isIOS)
+                        const Text('此版本已进入 SideStore 订阅源，请在 SideStore 刷新源后更新'),
                       TextButton(
                         onPressed: () => PageUtils.launchURL(
-                          '${Constants.sourceCodeUrl}/commits/main',
+                          '${Constants.sourceCodeUrl}/commits/btr',
                         ),
                         child: Text(
                           "点此查看完整更新(即commit)内容",
@@ -112,6 +146,9 @@ abstract final class Update {
       }
     } catch (e) {
       if (kDebugMode) debugPrint('failed to check update: $e');
+      if (!isAuto && Platform.isIOS) {
+        SmartDialog.showToast('检查更新失败，请检查网络后重试');
+      }
     }
   }
 

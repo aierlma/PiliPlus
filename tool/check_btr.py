@@ -8,6 +8,8 @@ CHECKS = {
     "lib/pages/setting/models/video_settings.dart": ["btrEnabled", "btrConcurrency", "btrCdnRace"],
     "lib/pages/setting/widgets/btr_quick_setting.dart": ["BtrProxyServer"],
     "lib/http/api.dart": ["https://api.github.com/repos/aierlma/PiliPlus/releases"],
+    "lib/utils/update.dart": ["BtrUpdate.publishedReleases", "BtrUpdate.availableRelease", "BuildConfig.versionCode"],
+    "lib/utils/btr_update.dart": ["https://raw.githubusercontent.com/aierlma/AltGallery/refs/heads/master/apps/PiliPlus-BTR/apps.json", "com.example.piliplus.btr"],
     "lib/common/constants.dart": ["https://github.com/aierlma/PiliPlus"],
     "ios/Runner/Info.plist": ["com.example.piliplus.btr", "PiliPlus BTR"],
     "ios/Runner.xcodeproj/project.pbxproj": ["PRODUCT_BUNDLE_IDENTIFIER = com.example.piliplus.btr"],

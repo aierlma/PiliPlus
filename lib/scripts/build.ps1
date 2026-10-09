@@ -31,6 +31,10 @@ try {
     # Keep the upstream app version, but give each personal iOS package a
     # distinct numeric release version for SideStore's stable update check.
     if ($Arg -eq 'btr-ios' -or $env:GITHUB_WORKFLOW -eq 'BTR and PiliPlus sync and iOS release') {
+        dart tool/tests/btr_update_test.dart
+        if ($LASTEXITCODE -ne 0) {
+            throw 'BTR iOS update checks failed'
+        }
         python3 lib/scripts/btr_ios_version.py $versionName "$versionCode"
         if ($LASTEXITCODE -ne 0) {
             throw 'BTR iOS version stamping failed'
