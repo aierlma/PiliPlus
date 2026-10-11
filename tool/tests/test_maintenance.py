@@ -111,6 +111,56 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
         self.assertEqual(git("status", "--porcelain"), "")
 
+    def test_official_tail_append_preserves_real_btr_preferences(self):
+        # Reproduce issue #9 using the real personal Pref declarations, offline.
+        mine_tabs = (
+            "  static Set<MineTabType> get mineTabs =>\n"
+            "      (_setting.get(SettingBoxKey.mineTabs) as List?)\n"
+            "          ?.map<MineTabType>((index) => .values[index])\n"
+            "          .toSet() ??\n"
+            "      MineTabType.kDefault;\n"
+        )
+        mine_import = "import 'package:PiliPlus/models/common/mine_tab_type.dart';\n"
+        personal = (Path(__file__).resolve().parents[2] / "lib/utils/storage_pref.dart").read_text()
+        # The same regression runs again after the real official merge.
+        personal = personal.replace(mine_tabs, "").replace(mine_import, "")
+        start = personal.index("  static bool get btrEnabled")
+        end = personal.index("      _setting.put(SettingBoxKey.btrCdnRace, value);", start)
+        end += len("      _setting.put(SettingBoxKey.btrCdnRace, value);\n")
+        btr = personal[start:end]
+        common = personal[:start] + personal[end:]
+        path = Path("lib/utils/storage_pref.dart")
+        git("checkout", "official")
+        path.parent.mkdir(parents=True)
+        path.write_text(common)
+        git("add", str(path))
+        git("commit", "-m", "common preferences")
+        git("checkout", "btr")
+        git("merge", "--no-edit", "official")
+        path.write_text(personal)
+        git("add", str(path))
+        git("commit", "-m", "personal BTR preferences")
+        self.base = git("rev-parse", "HEAD")
+
+        # This is the official getter added at the class tail by 56ad46af4928.
+        git("checkout", "official")
+        official = common.rstrip().removesuffix("}") + mine_tabs + "}\n"
+        official = mine_import + official
+        path.write_text(official)
+        git("add", str(path))
+        git("commit", "-m", "official mine tabs")
+        upstream = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        merged = path.read_text()
+        self.assertEqual(merged.count(btr), 1)
+        self.assertEqual(merged.count(mine_tabs), 1)
+        self.assertEqual(merged.count(mine_import), 1)
+        for sha in (upstream, self.author_base):
+            self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_lagging_btr_author_does_not_revert_new_official_source(self):
         upstream = self.official()
         current = prepare_btr_sync.prepare(upstream, self.base, self.author_base)

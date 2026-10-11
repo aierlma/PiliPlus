@@ -84,7 +84,7 @@ jobs:
       - name: Verify BTR and complete application
         run: |
           python3 tool/make_btr_mirror.py
-          flutter test --no-pub test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
+          flutter test --no-pub test/utils/storage_pref_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
           flutter analyze --no-pub --no-fatal-infos
       - name: Set version and build number
         shell: pwsh
