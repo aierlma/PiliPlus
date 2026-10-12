@@ -161,7 +161,9 @@ abstract final class SettingBoxKey {
       angleDegrees = 'angleDegrees',
       liveStream = 'liveStream',
       enableDocProvider = 'enableDocProvider',
-      enableEmoteTooltip = 'enableEmoteTooltip';
+      enableEmoteTooltip = 'enableEmoteTooltip',
+      mineTabs = 'mineTabs',
+      buvid = 'buvid';
 
   static const String minimizeOnExit = 'minimizeOnExit',
       windowSize = 'windowSize',
@@ -252,8 +254,7 @@ abstract final class LocalCacheKey {
       blackMids = 'blackMids',
       danmakuFilterRules = 'danmakuFilterRules',
       mixinKey = 'mixinKey',
-      timeStamp = 'timeStamp',
-      buvid = 'buvid';
+      timeStamp = 'timeStamp';
 }
 
 abstract final class VideoBoxKey {
