@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [btr]
     paths:
+      - lib/utils/config_archive.dart
       - lib/utils/storage_pref.dart
       - test/utils/storage_pref_test.dart
       - tool/tests/test_maintenance.py
@@ -18,7 +19,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     env:
-      UPSTREAM: 56ad46af49283623a80dc860214897d0e21dd83c
+      UPSTREAM: 6a5171f98f6d493f3c07bc7fc5f0952d4bc5a5b4
       BTR_UPSTREAM: 3988e6d081a26120ca79f1e654fe1a3422b7282f
     steps:
       - uses: actions/checkout@v7

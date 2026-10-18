@@ -1,6 +1,5 @@
 import 'dart:async' show FutureOr;
 import 'dart:convert';
-import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:PiliPlus/build_config.dart';
