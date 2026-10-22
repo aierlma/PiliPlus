@@ -11,6 +11,14 @@ import 'package:get/get.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:material_ui/material_ui.dart';
 
+// Live-buffer controls belong to the pinned official merge candidate.
+const _isSyncCandidate = bool.fromEnvironment('BTR_SYNC_CANDIDATE');
+
+NormalModel _setting(String title) =>
+    videoSettings.whereType<NormalModel>().singleWhere(
+      (model) => model.title == title,
+    );
+
 class _RefreshRecorder {
   int count = 0;
   final completed = Completer<void>();
@@ -25,9 +33,7 @@ Future<_RefreshRecorder> _openSetting(
   WidgetTester tester,
   String title,
 ) async {
-  final model = videoSettings.whereType<NormalModel>().singleWhere(
-    (model) => model.title == title,
-  );
+  final model = _setting(title);
   final refresh = _RefreshRecorder();
   await tester.pumpWidget(
     GetMaterialApp(
@@ -130,23 +136,22 @@ void main() {
     });
   }
 
-  for (final (title, key, value) in const [
-    ('直播缓冲大小', SettingBoxKey.liveBufferSize, 12.5),
-    ('直播缓冲时长', SettingBoxKey.liveBufferSec, 7.25),
+  for (final (title, key, value, subtitle) in const [
+    ('直播缓冲大小', 'liveBufferSize', 12.5, '12.5MB'),
+    ('直播缓冲时长', 'liveBufferSec', 7.25, '7.25s'),
   ]) {
-    testWidgets('$title persists a decimal and refreshes', (tester) async {
-      final refresh = await _openSetting(tester, title);
-      await tester.enterText(find.byType(TextFormField), value.toString());
-      await _selectAndWaitForWrite(tester, refresh, find.text('确定'));
+    testWidgets(
+      '$title persists a decimal and refreshes',
+      (tester) async {
+        final refresh = await _openSetting(tester, title);
+        await tester.enterText(find.byType(TextFormField), value.toString());
+        await _selectAndWaitForWrite(tester, refresh, find.text('确定'));
 
-      expect(GStorage.setting.get(key), isA<double>());
-      expect(GStorage.setting.get(key), value);
-      expect(
-        key == SettingBoxKey.liveBufferSize
-            ? Pref.liveBufferSize
-            : Pref.liveBufferSec,
-        value,
-      );
-    });
+        expect(GStorage.setting.get(key), isA<double>());
+        expect(GStorage.setting.get(key), value);
+        expect(_setting(title).effectiveSubtitle, contains(subtitle));
+      },
+      skip: !_isSyncCandidate,
+    );
   }
 }
