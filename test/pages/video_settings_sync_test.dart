@@ -84,8 +84,8 @@ void main() {
     await GStorage.setting.clear();
   });
 
-  tearDown(() async {
-    await Get.reset();
+  tearDown(() {
+    Get.reset();
   });
 
   tearDownAll(() async {
