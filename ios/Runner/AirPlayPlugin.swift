@@ -4,7 +4,7 @@ import UIKit
 
 /// AVKit owns the AirPlay picker, receiver connection and video playback.
 /// The receiver gets the CDN URL, never the phone's loopback BTR URL.
-final class AirPlayPlugin: NSObject, FlutterPlugin {
+final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
       name: "com.example.piliplus/airplay",
@@ -15,8 +15,12 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
   }
 
   private var controller: AirPlayViewController?
+  private weak var presenter: UIViewController?
+  private var routePicker: AVRoutePickerView?
+  private var pickerOpened = false
   private var completion: FlutterResult?
   private var statusObservation: NSKeyValueObservation?
+  private var resolutionObservation: NSKeyValueObservation?
   private var preparationTimer: Timer?
   private var initialPositionMs = 0
   private var failure: String?
@@ -91,13 +95,8 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
     }
 
     let item = AVPlayerItem(url: url)
-    if let title = args["title"] as? String, !title.isEmpty {
-      let metadata = AVMutableMetadataItem()
-      metadata.identifier = .commonIdentifierTitle
-      metadata.value = title as NSString
-      metadata.extendedLanguageTag = "und"
-      item.externalMetadata = [metadata]
-    }
+    let title = (args["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "PiliPlus BTR"
+    setTitle(title, for: item)
     let player = AVPlayer(playerItem: item)
     player.allowsExternalPlayback = true
     let viewController = AirPlayViewController()
@@ -107,14 +106,80 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
     viewController.modalPresentationStyle = .fullScreen
     viewController.onClose = { [weak self] in self?.finish() }
     controller = viewController
+    self.presenter = presenter
     completion = result
     initialPositionMs = max(0, (args["positionMs"] as? NSNumber)?.intValue ?? 0)
     failure = nil
     started = false
     positionLoaded = false
-    presenter.present(viewController, animated: true) { [weak self] in
-      self?.prepare(item, player: player)
+    resolutionObservation = item.observe(\.presentationSize, options: [.initial, .new]) {
+      [weak self] item, _ in
+      let size = item.presentationSize
+      guard size.width > 0, size.height > 0 else { return }
+      DispatchQueue.main.async {
+        guard let self, self.controller?.player?.currentItem === item else { return }
+        // Read the loaded video dimensions rather than the requested quality tier.
+        let resolution = "\(Int(size.width.rounded()))×\(Int(size.height.rounded()))"
+        self.setTitle("\(resolution) · \(title)", for: item)
+      }
     }
+    showRoutes(from: presenter)
+  }
+
+  private func showRoutes(from presenter: UIViewController) {
+    let picker = AVRoutePickerView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+    picker.prioritizesVideoDevices = true
+    picker.delegate = self
+    picker.isHidden = true
+    presenter.view.addSubview(picker)
+    picker.layoutIfNeeded()
+    routePicker = picker
+    pickerOpened = false
+    // Forward the user's Flutter AirPlay tap to AVKit's route button.
+    // AVKit owns the device list; no private selector or routing API is used.
+    guard let button = picker.subviews.compactMap({ $0 as? UIButton }).first else {
+      fail("无法打开 AirPlay 设备列表，请重试")
+      return
+    }
+    button.sendActions(for: .touchUpInside)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak picker] in
+      guard let self, self.routePicker === picker, !self.pickerOpened else { return }
+      self.fail("无法打开 AirPlay 设备列表，请重试")
+    }
+  }
+
+  func routePickerViewWillBeginPresentingRoutes(_ routePickerView: AVRoutePickerView) {
+    if routePicker === routePickerView { pickerOpened = true }
+  }
+
+  func routePickerViewDidEndPresentingRoutes(_ routePickerView: AVRoutePickerView) {
+    guard routePicker === routePickerView else { return }
+    routePickerView.removeFromSuperview()
+    routePicker = nil
+    // Let the system picker finish dismissing before showing playback controls.
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.completion != nil,
+        let presenter = self.presenter, let controller = self.controller,
+        let player = controller.player, let item = player.currentItem
+      else { return }
+      let selectedTV = AVAudioSession.sharedInstance().currentRoute.outputs
+        .contains { $0.portType == .airPlay }
+      guard selectedTV else {
+        self.finish()
+        return
+      }
+      presenter.present(controller, animated: true) { [weak self] in
+        self?.prepare(item, player: player)
+      }
+    }
+  }
+
+  private func setTitle(_ title: String, for item: AVPlayerItem) {
+    let metadata = AVMutableMetadataItem()
+    metadata.identifier = .commonIdentifierTitle
+    metadata.value = title as NSString
+    metadata.extendedLanguageTag = "und"
+    item.externalMetadata = [metadata]
   }
 
   private func prepare(_ item: AVPlayerItem, player: AVPlayer) {
@@ -156,7 +221,11 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
   private func fail(_ message: String) {
     guard completion != nil else { return }
     failure = message
-    controller?.dismiss(animated: true) { [weak self] in self?.finish() }
+    if let controller, controller.presentingViewController != nil {
+      controller.dismiss(animated: true) { [weak self] in self?.finish() }
+    } else {
+      finish()
+    }
   }
 
   private func finish() {
@@ -165,6 +234,10 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
     preparationTimer?.invalidate()
     preparationTimer = nil
     statusObservation = nil
+    resolutionObservation = nil
+    routePicker?.delegate = nil
+    routePicker?.removeFromSuperview()
+    routePicker = nil
     let player = controller?.player
     let seconds = player.map { CMTimeGetSeconds($0.currentTime()) } ?? .nan
     let positionMs = positionLoaded && seconds.isFinite && seconds >= 0
@@ -173,6 +246,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin {
     player?.replaceCurrentItem(with: nil)
     controller?.onClose = nil
     controller = nil
+    presenter = nil
     restoreAudioSession()
     var response: [String: Any] = ["positionMs": positionMs]
     if let failure { response["error"] = failure }

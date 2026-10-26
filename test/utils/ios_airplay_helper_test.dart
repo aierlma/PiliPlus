@@ -51,9 +51,10 @@ void main() {
   test(
     'clears ownership after a native failure so playback can be retried',
     () async {
-      messenger.setMockMethodCallHandler(channel, (_) async {
-        throw PlatformException(code: 'WINDOW');
-      });
+      messenger.setMockMethodCallHandler(
+        channel,
+        (_) => Future<Object?>.error(PlatformException(code: 'WINDOW')),
+      );
       await expectLater(
         IOSAirPlayHelper.present(
           url: 'https://example.com/video.mp4',

@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-/// Hands a complete media URL to AVKit; mpv and the loopback BTR proxy stay idle.
+/// Hands a complete media URL to AVKit, bypassing mpv and the loopback BTR proxy.
 abstract final class IOSAirPlayHelper {
   static const _channel = MethodChannel('com.example.piliplus/airplay');
 
