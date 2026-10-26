@@ -34,7 +34,8 @@ Future<_RefreshRecorder> _openSetting(
   String title,
 ) async {
   final model = _setting(title);
-  final refresh = _RefreshRecorder();
+  // Its completion microtask must run in the real zone used to await Hive.
+  final refresh = (await tester.runAsync(() async => _RefreshRecorder()))!;
   await tester.pumpWidget(
     GetMaterialApp(
       home: Scaffold(

@@ -544,6 +544,9 @@ class CdnPool {
       }
     }
     if (matchedUrl == null && originalUrls.isNotEmpty) {
+      // A cached race winner may belong to a previous, non-Akamai video.
+      // Never move a host-bound Akamai signature to another CDN (or vice versa).
+      if (isAkamaiUrl(originalUrls.first) || isAkamaiHost(lowerHost)) return;
       try {
         final donorUri = Uri.parse(originalUrls.first);
         final defaultPort = donorUri.scheme == 'http' ? 80 : 443;
