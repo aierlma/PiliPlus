@@ -34,6 +34,11 @@ jobs:
         shell: pwsh
         run: lib/scripts/patch.ps1 iOS
 
+      - name: Verify signed CDN selection and BTR compatibility
+        run: |
+          python3 tool/make_btr_mirror.py
+          flutter test --no-pub test/utils/cdn_url_test.dart test/standalone/btr_akamai_test.dart test/standalone/btr_cdn_racer_test.dart
+
       - name: Build iOS
         run: |
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
