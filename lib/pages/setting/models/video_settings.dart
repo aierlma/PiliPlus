@@ -231,6 +231,47 @@ List<SettingsModel> get videoSettings => [
   ),
 ];
 
+Future<void> _showBtrConcurrencyDialog(
+  BuildContext context,
+  VoidCallback setState,
+) async {
+  final res = await showDialog<int>(
+    context: context,
+    builder: (context) => SelectDialog<int>(
+      title: 'BTR 并发上限',
+      value: Pref.btrConcurrency,
+      values: const [4, 8, 16, 32, 64].map((e) => (e, '$e 线程')).toList(),
+    ),
+  );
+  if (res != null) {
+    await GStorage.setting.put(SettingBoxKey.btrConcurrency, res);
+    setState();
+  }
+}
+
+/// BTR 节点分组（保守借鉴官方「CDN 模式」：大陆 / 海外；另加「自动」为本移植新增）
+Future<void> _showBtrGroupDialog(
+  BuildContext context,
+  VoidCallback setState,
+) async {
+  final res = await showDialog<String>(
+    context: context,
+    builder: (context) => SelectDialog<String>(
+      title: 'BTR 节点分组',
+      value: Pref.btrGroup,
+      values: const [
+        ('auto', '自动（起播测速后选快的一组，推荐）'),
+        ('mainland', '大陆节点（官方默认模式）'),
+        ('overseas', '海外节点（接近大陆网络差时用）'),
+      ],
+    ),
+  );
+  if (res != null) {
+    await GStorage.setting.put(SettingBoxKey.btrGroup, res);
+    setState();
+  }
+}
+
 Future<void> _showCDNDialog(BuildContext context, VoidCallback setState) async {
   final res = await showDialog<CDNService>(
     context: context,
@@ -623,44 +664,3 @@ void _showBufferSecDialog(BuildContext context, VoidCallback setState) =>
       title: '缓冲时长',
       suffix: 's',
     );
-
-Future<void> _showBtrConcurrencyDialog(
-  BuildContext context,
-  VoidCallback setState,
-) async {
-  final res = await showDialog<int>(
-    context: context,
-    builder: (context) => SelectDialog<int>(
-      title: 'BTR 并发上限',
-      value: Pref.btrConcurrency,
-      values: const [4, 8, 16, 32, 64].map((e) => (e, '$e 线程')).toList(),
-    ),
-  );
-  if (res != null) {
-    await GStorage.setting.put(SettingBoxKey.btrConcurrency, res);
-    setState();
-  }
-}
-
-/// BTR 节点分组（保守借鉴官方「CDN 模式」：大陆 / 海外；另加「自动」为本移植新增）
-Future<void> _showBtrGroupDialog(
-  BuildContext context,
-  VoidCallback setState,
-) async {
-  final res = await showDialog<String>(
-    context: context,
-    builder: (context) => SelectDialog<String>(
-      title: 'BTR 节点分组',
-      value: Pref.btrGroup,
-      values: const [
-        ('auto', '自动（起播测速后选快的一组，推荐）'),
-        ('mainland', '大陆节点（官方默认模式）'),
-        ('overseas', '海外节点（接近大陆网络差时用）'),
-      ],
-    ),
-  );
-  if (res != null) {
-    await GStorage.setting.put(SettingBoxKey.btrGroup, res);
-    setState();
-  }
-}
