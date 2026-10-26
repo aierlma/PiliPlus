@@ -155,7 +155,7 @@ class _BtrQuickSettingSheetState extends State<BtrQuickSettingSheet> {
                     dense: true,
                     value: _cdnRaceEnabled,
                     title: const Text('开启自动竞速'),
-                    subtitle: const Text('进入视频时快速选出最快节点，TTL 内免去重复探测'),
+                    subtitle: const Text('进入视频时测速；Akamai 使用原地址，其他节点自动竞速'),
                     onChanged: _enabled
                         ? (value) => setState(() => _cdnRaceEnabled = value)
                         : null,
@@ -195,7 +195,7 @@ class _BtrQuickSettingSheetState extends State<BtrQuickSettingSheet> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '最优节点: ${cached.host}',
+                              '测速节点: ${cached.host}',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -253,7 +253,7 @@ class _BtrQuickSettingSheetState extends State<BtrQuickSettingSheet> {
                                       );
                                     case CdnRaceOutcome.noWinner:
                                       SmartDialog.showToast(
-                                        '竞速完成：所有候选均未能测出速度（当前网络到 B 站节点无响应），已保持现役节点',
+                                        '本次未能完成节点测速，已保持当前播放地址；请稍后重试',
                                       );
                                     case CdnRaceOutcome.failed:
                                       SmartDialog.showToast(

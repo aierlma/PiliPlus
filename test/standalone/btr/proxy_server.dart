@@ -627,8 +627,13 @@ class BtrProxyServer {
       // CDN 自动竞速调度（只在启用且为 GET 请求时触发；后台异步进行，绝不阻塞起播）
       if (cdnRaceEnabled && request.method == 'GET') {
         if (!pool.hasRacerHint) {
-          if (racer.isFresh) {
-            final cached = racer.cached!;
+          final cachedResult = racer.cached;
+          final compatibleCache = cachedResult != null &&
+              (CdnPool.isAkamaiUrl(targetUrl)
+                  ? cachedResult.host == Uri.parse(targetUrl).host
+                  : !CdnPool.isAkamaiHost(cachedResult.host));
+          if (racer.isFresh && compatibleCache) {
+            final cached = cachedResult;
             final ageSec =
                 (DateTime.now().millisecondsSinceEpoch - cached.measuredAtMs) ~/
                     1000;
