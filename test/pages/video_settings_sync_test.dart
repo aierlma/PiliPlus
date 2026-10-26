@@ -62,7 +62,15 @@ Future<void> _selectAndWaitForWrite(
   // The dialog awaits a real Hive file write before refreshing its caller.
   await tester.runAsync(() async {
     await tester.tap(selection);
-    await refresh.completed.future.timeout(const Duration(seconds: 5));
+    try {
+      await refresh.completed.future.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      fail(
+        'Refresh wait timed out: count=${refresh.count}, '
+        'signalCompleted=${refresh.completed.isCompleted}, '
+        'temporarySettings=${GStorage.setting.toMap()}',
+      );
+    }
   });
   await tester.pumpAndSettle();
   expect(refresh.count, 1);
