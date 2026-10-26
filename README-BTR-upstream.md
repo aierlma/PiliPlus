@@ -80,6 +80,16 @@ flutter test --no-pub test/standalone/btr_proxy_e2e_test.dart      # 端到端�
 
 <br/>
 
+## 贡献者
+
+| 贡献者 | 内容 |
+|---|---|
+| [nishuodedui1145-del](https://github.com/nishuodedui1145-del) | 本项目作者：BTR 多 Range 并发原理移植、本地代理与分块调度、CDN 竞速、sidx 规划、六套测试与全部发版 |
+| [Beaulol](https://github.com/Beaulol) | 独立实现 [PiliPlus_BTR（PiliPlus BTR Turbo）](https://github.com/Beaulol/PiliPlus_BTR)：Android 侧另一套 BTR 接入，提供对照验证与大量真机问题反馈；其改进以 PR 形式合入本仓库 |
+
+> 说明：本项目与上面的独立实现互相独立完成（代码无重合），各自的发版、署名与责任范围互不覆盖。
+> 若发现本仓库的机制被借鉴，欢迎在实现方的 README 中保留指向本仓库的链接。
+
 ## 许可
 
 - 本仓库是 PiliPlus 的衍生作品，**整体沿用上游的 GPL-3.0**（见 [LICENSE](LICENSE)，未改动）。
