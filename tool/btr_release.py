@@ -76,6 +76,23 @@ def blocked(base, upstream, btr_upstream):
     return next((item["number"] for item in items if item["title"] == title(base, upstream, btr_upstream)), None)
 
 
+def close_resolved_failures(source):
+    """Close only generated failures whose three inputs are now validated ancestors."""
+    items = json.loads(run("gh", "issue", "list", "--repo", REPO, "--state", "open",
+                           "--limit", "1000", "--search", '"BTR sync blocked:" in:title',
+                           "--json", "number,title,body").stdout)
+    pattern = (r"Personal source: ([0-9a-f]{40})\n"
+               r"Official PiliPlus upstream: ([0-9a-f]{40})\n"
+               r"BTR author upstream: ([0-9a-f]{40})")
+    for item in items:
+        match = re.search(pattern, item.get("body", ""))
+        if not match or item.get("title") != title(*match.groups()):
+            continue
+        if all(run("git", "merge-base", "--is-ancestor", sha, source,
+                   check=False).returncode == 0 for sha in match.groups()):
+            run("gh", "issue", "close", str(item["number"]), "--repo", REPO)
+
+
 def plan(retry=False):
     run("git", "fetch", "https://github.com/bggRGjQaUbCoE/PiliPlus.git", "main")
     base = run("git", "rev-parse", "HEAD").stdout.strip()
@@ -156,9 +173,7 @@ def publish(base, upstream, btr_upstream):
         # Keep the existing workflow and all validation gates. A docs-only
         # upstream merge advances history without publishing another package.
         run("git", "push", "origin", f"{source}:refs/heads/btr")
-        issue = blocked(base, upstream, btr_upstream)
-        if issue:
-            run("gh", "issue", "close", str(issue), "--repo", REPO)
+        close_resolved_failures(source)
         print("Synced validated maintenance changes without publishing another IPA")
         return
     # Reject version collisions before staging a branch, creating a release or
@@ -179,9 +194,7 @@ def publish(base, upstream, btr_upstream):
     # This non-force push also detects changes made after the earlier check.
     run("git", "push", "origin", f"{source}:refs/heads/btr")
     run("gh", "release", "edit", tag, "--repo", REPO, "--draft=false", "--latest")
-    issue = blocked(base, upstream, btr_upstream)
-    if issue:
-        run("gh", "issue", "close", str(issue), "--repo", REPO)
+    close_resolved_failures(source)
     run("git", "push", "origin", "--delete", stage, check=False)
     print(f"Published https://github.com/{REPO}/releases/tag/{tag}")
 
