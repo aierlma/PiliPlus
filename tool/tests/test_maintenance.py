@@ -230,6 +230,38 @@ class SyncTests(unittest.TestCase):
         git("commit", "-m", "app changes")
         self.assertEqual(set(btr_release.application_changes(self.base, git("rev-parse", "HEAD"))), set(names) | {"btr.dart"})
 
+    def test_resolved_failures_close_only_when_all_recorded_inputs_are_included(self):
+        upstream = self.official()
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        future_upstream = self.official("not yet validated")
+
+        def issue(number, source):
+            return {"number": number,
+                    "title": btr_release.title(self.base, source, self.author_base),
+                    "body": (f"Personal source: {self.base}\n"
+                             f"Official PiliPlus upstream: {source}\n"
+                             f"BTR author upstream: {self.author_base}")}
+
+        resolved = issue(9, upstream)
+        unresolved = issue(13, future_upstream)
+        unrelated = dict(issue(22, upstream), title="Playback bug report")
+        malformed = dict(issue(23, upstream), body="No pinned source metadata")
+        closed = []
+        original_run = btr_release.run
+
+        def command(*args, **kwargs):
+            if args[:3] == ("gh", "issue", "list"):
+                return subprocess.CompletedProcess(args, 0, json.dumps(
+                    [resolved, unresolved, unrelated, malformed]), "")
+            if args[:3] == ("gh", "issue", "close"):
+                closed.append(int(args[3]))
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return original_run(*args, **kwargs)
+
+        with patch.object(btr_release, "run", side_effect=command):
+            btr_release.close_resolved_failures(candidate)
+        self.assertEqual(closed, [9])
+
     def stage_sync_candidate(self, remote, source):
         Path("pubspec.yaml").write_text("version: 2.1.6+1\n")
         git("add", "pubspec.yaml")
@@ -254,7 +286,7 @@ class SyncTests(unittest.TestCase):
     def test_docs_only_upstream_sync_advances_history_without_release(self):
         with tempfile.TemporaryDirectory() as remote:
             upstream, candidate = self.stage_sync_candidate(remote, "shared source")
-            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "blocked", return_value=None), patch.object(btr_release, "api", side_effect=AssertionError("No release should be created")):
+            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "close_resolved_failures"), patch.object(btr_release, "api", side_effect=AssertionError("No release should be created")):
                 btr_release.publish(self.base, upstream, self.author_base)
             self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], candidate)
             self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
