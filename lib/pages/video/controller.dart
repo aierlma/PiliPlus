@@ -59,6 +59,7 @@ import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
+import 'package:PiliPlus/utils/ios/airplay_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -1618,20 +1619,69 @@ class VideoDetailController extends GetxController
     );
   }
 
-  @pragma('vm:notify-debugger-on-exception')
+  bool _casting = false;
+
   Future<void> onCast() async {
+    if (_casting) return;
+    _casting = true;
+    try {
+      final airPlay = Platform.isIOS
+          ? await showModalBottomSheet<bool>(
+              context: Get.context!,
+              useRootNavigator: true,
+              builder: (context) => SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.airplay),
+                      title: const Text('AirPlay'),
+                      subtitle: const Text('Apple TV / 支持 AirPlay 的电视'),
+                      onTap: () => Navigator.pop(context, true),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.cast),
+                      title: const Text('DLNA 投屏'),
+                      onTap: () => Navigator.pop(context, false),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : false;
+      if (airPlay != null && !isClosed) await _castVideo(airPlay);
+    } catch (_) {
+      SmartDialog.showToast('投屏启动失败，请稍后重试');
+    } finally {
+      _casting = false;
+    }
+  }
+
+  Future<void> _castVideo(bool airPlay) async {
+    final castCid = cid.value;
     SmartDialog.showLoading();
-    final res = await VideoHttp.tvPlayUrl(
-      cid: cid.value,
-      objectId: epId ?? aid,
-      playurlType: epId != null ? 2 : 1,
-      qn: currentVideoQa.value?.code,
-    );
-    SmartDialog.dismiss();
+    final LoadingState<PlayUrlModel> res;
+    try {
+      res = await VideoHttp.tvPlayUrl(
+        cid: castCid,
+        objectId: epId ?? aid,
+        playurlType: epId != null ? 2 : 1,
+        qn: currentVideoQa.value?.code,
+      );
+    } finally {
+      SmartDialog.dismiss();
+    }
+    if (isClosed || cid.value != castCid) return;
     if (res case Success(:final response)) {
       final first = response.durl?.firstOrNull;
       if (first == null || first.playUrls.isEmpty) {
         SmartDialog.showToast('不支持投屏');
+        return;
+      }
+      if (airPlay &&
+          (response.durl!.length != 1 ||
+              !(response.format?.startsWith('mp4') ?? false))) {
+        SmartDialog.showToast('此视频暂不支持 AirPlay，请尝试 DLNA 投屏');
         return;
       }
       final url = VideoUtils.getCdnUrl(first.playUrls);
@@ -1639,25 +1689,39 @@ class VideoDetailController extends GetxController
       String? title;
       try {
         if (isUgc) {
-          title = Get.find<UgcIntroController>(
-            tag: heroTag,
-          ).videoDetail.value.title;
+          title = Get.find<UgcIntroController>(tag: heroTag)
+              .videoDetail
+              .value
+              .title;
         } else {
-          title = Get.find<PgcIntroController>(
-            tag: heroTag,
-          ).videoDetail.value.title;
+          title = Get.find<PgcIntroController>(tag: heroTag)
+              .videoDetail
+              .value
+              .title;
         }
       } catch (_) {}
       if (kDebugMode) {
         debugPrint(title);
       }
-      Get.toNamed(
-        '/dlna',
-        parameters: {
-          'url': url,
-          'title': ?title,
-        },
-      );
+      if (airPlay) {
+        final currentPlayer = player;
+        final position = Duration(
+          milliseconds: plPlayerController.positionInMilliseconds,
+        );
+        await plPlayerController.pause();
+        final result = await IOSAirPlayHelper.present(
+          url: url,
+          title: title ?? 'PiliPlus BTR',
+          position: position,
+        );
+        if (!isClosed && cid.value == castCid && player == currentPlayer) {
+          // Returning from the system player keeps local playback paused.
+          await plPlayerController.seekTo(result.position, isSeek: false);
+          if (result.error case final error?) SmartDialog.showToast(error);
+        }
+        return;
+      }
+      Get.toNamed('/dlna', parameters: {'url': url, 'title': ?title});
     } else {
       res.toast();
     }

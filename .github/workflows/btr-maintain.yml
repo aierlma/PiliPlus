@@ -84,7 +84,7 @@ jobs:
       - name: Verify BTR and complete application
         run: |
           python3 tool/make_btr_mirror.py
-          flutter test --no-pub --dart-define=BTR_SYNC_CANDIDATE=true test/utils/storage_pref_test.dart test/pages/video_settings_sync_test.dart test/utils/video_quality_select_test.dart test/utils/audio_quality_select_test.dart test/utils/cdn_url_test.dart test/standalone/btr_akamai_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
+          flutter test --no-pub --dart-define=BTR_SYNC_CANDIDATE=true test/utils/storage_pref_test.dart test/pages/video_settings_sync_test.dart test/utils/video_quality_select_test.dart test/utils/audio_quality_select_test.dart test/utils/cdn_url_test.dart test/utils/ios_airplay_helper_test.dart test/standalone/btr_akamai_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
           dart tool/tests/btr_update_test.dart
           flutter analyze --no-pub --no-fatal-infos
       - name: Set version and build number
