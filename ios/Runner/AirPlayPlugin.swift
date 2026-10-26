@@ -26,6 +26,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   private var failure: String?
   private var started = false
   private var positionLoaded = false
+  private var enableSubtitles = false
   private var audioConfiguration: (
     AVAudioSession.Category, AVAudioSession.Mode,
     AVAudioSession.RouteSharingPolicy, AVAudioSession.CategoryOptions
@@ -57,7 +58,9 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       return
     }
     guard let rawURL = args["url"] as? String, let url = URL(string: rawURL),
-      url.scheme == "https", let host = url.host,
+      let host = url.host,
+      url.scheme == "https" || (args["localNetwork"] as? Bool == true
+        && url.scheme == "http" && isPrivateAddress(host)),
       !["localhost", "127.0.0.1", "::1"].contains(host)
     else {
       result(FlutterError(code: "URL", message: "此播放地址不支持 AirPlay", details: nil))
@@ -112,6 +115,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     failure = nil
     started = false
     positionLoaded = false
+    enableSubtitles = args["subtitles"] as? Bool == true
     resolutionObservation = item.observe(\.presentationSize, options: [.initial, .new]) {
       [weak self] item, _ in
       let size = item.presentationSize
@@ -182,6 +186,13 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     item.externalMetadata = [metadata]
   }
 
+  private func isPrivateAddress(_ host: String) -> Bool {
+    let parts = host.split(separator: ".").compactMap { Int($0) }
+    guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else { return false }
+    return parts[0] == 10 || (parts[0] == 172 && (16...31).contains(parts[1]))
+      || (parts[0] == 192 && parts[1] == 168)
+  }
+
   private func prepare(_ item: AVPlayerItem, player: AVPlayer) {
     guard completion != nil, controller?.player === player else { return }
     preparationTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) {
@@ -198,6 +209,14 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
           self.started = true
           self.preparationTimer?.invalidate()
           self.preparationTimer = nil
+          if self.enableSubtitles {
+            Task { @MainActor [weak self] in
+              guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                let option = group.options.first, self?.controller?.player === player
+              else { return }
+              item.select(option, in: group)
+            }
+          }
           let seconds = CMTimeGetSeconds(item.duration)
           let requested = Double(self.initialPositionMs) / 1000
           let position = seconds.isFinite ? min(requested, max(0, seconds - 0.1)) : requested

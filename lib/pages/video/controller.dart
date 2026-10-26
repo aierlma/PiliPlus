@@ -52,6 +52,8 @@ import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/services/btr_proxy/proxy_server.dart';
+import 'package:PiliPlus/services/airplay_hls.dart';
+import 'package:PiliPlus/services/btr_proxy/range_core.dart' show BtrLog;
 import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -60,6 +62,7 @@ import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/ios/airplay_helper.dart';
+import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -1650,7 +1653,8 @@ class VideoDetailController extends GetxController
             )
           : false;
       if (airPlay != null && !isClosed) await _castVideo(airPlay);
-    } catch (_) {
+    } catch (error) {
+      BtrLog.log('[AirPlay] start failed: ${BtrLog.redact(error)}');
       SmartDialog.showToast('投屏启动失败，请稍后重试');
     } finally {
       _casting = false;
@@ -1659,6 +1663,10 @@ class VideoDetailController extends GetxController
 
   Future<void> _castVideo(bool airPlay) async {
     final castCid = cid.value;
+    if (airPlay && data.dash != null) {
+      await _castDashAirPlay(castCid);
+      return;
+    }
     SmartDialog.showLoading();
     final LoadingState<PlayUrlModel> res;
     try {
@@ -1724,6 +1732,114 @@ class VideoDetailController extends GetxController
       Get.toNamed('/dlna', parameters: {'url': url, 'title': ?title});
     } else {
       res.toast();
+    }
+  }
+
+  Future<void> _castDashAirPlay(int castCid) async {
+    final dash = data.dash!;
+    final quality = currentVideoQa.value?.code;
+    final video =
+        dash.video?.firstWhereOrNull(
+          (item) =>
+              item.id == quality && (item.codecs?.startsWith('avc1') ?? false),
+        ) ??
+        dash.video?.firstWhereOrNull(
+          (item) =>
+              item.id == quality && (item.codecs?.startsWith('hvc1') ?? false),
+        );
+    final audio =
+        dash.audio?.firstWhereOrNull(
+          (item) =>
+              item.id == currentAudioQa?.code &&
+              (item.codecs?.startsWith('mp4a') ?? false),
+        ) ??
+        dash.audio?.firstWhereOrNull(
+          (item) => item.codecs?.startsWith('mp4a') ?? false,
+        );
+    if (video == null ||
+        audio == null ||
+        (video.width ?? 0) <= 0 ||
+        (video.height ?? 0) <= 0) {
+      SmartDialog.showToast('当前画质暂无 AirPlay 支持的音视频编码，请切换画质后重试');
+      return;
+    }
+    final playerAtStart = player;
+    final position = Duration(
+      milliseconds: plPlayerController.positionInMilliseconds,
+    );
+    final withDanmaku = plPlayerController.enableShowDanmaku.value;
+    final AirPlayHlsSession session;
+    SmartDialog.showLoading();
+    try {
+      session = await AirPlayHlsSession.start(
+        video: AirPlayTrack(
+          url: VideoUtils.getCdnUrl(video.playUrls),
+          codecs: video.codecs!,
+          bandwidth: video.bandWidth ?? 5000000,
+          width: video.width!,
+          height: video.height!,
+        ),
+        audio: AirPlayTrack(
+          url: VideoUtils.getCdnUrl(audio.playUrls, isAudio: true),
+          codecs: audio.codecs!,
+          bandwidth: audio.bandWidth ?? 192000,
+        ),
+        subtitles: withDanmaku
+            ? (segment) async {
+                final comments = <AirPlayComment>[];
+                // Include the previous segment so comments crossing a seek boundary
+                // keep their original timing rather than restarting.
+                for (final index in [if (segment > 0) segment - 1, segment]) {
+                  final res = await DmGrpc.dmSegMobile(
+                    cid: castCid,
+                    segmentIndex: index + 1,
+                  );
+                  if (res case Success(:final response)) {
+                    for (final item in response.elems) {
+                      if (plPlayerController.filters.count != 0 &&
+                          plPlayerController.filters.remove(item))
+                        continue;
+                      comments.add(
+                        AirPlayComment(item.progress, item.mode, item.content),
+                      );
+                    }
+                  } else {
+                    throw StateError('投屏弹幕加载失败');
+                  }
+                }
+                return airPlayDanmakuVtt(comments, segment);
+              }
+            : null,
+      );
+    } finally {
+      SmartDialog.dismiss();
+    }
+    try {
+      if (isClosed || cid.value != castCid || player != playerAtStart) return;
+      String title = 'PiliPlus BTR';
+      try {
+        title = isUgc
+            ? ugcIntroCtr.videoDetail.value.title ?? title
+            : Get.find<PgcIntroController>(tag: heroTag)
+                      .videoDetail
+                      .value
+                      .title ??
+                  title;
+      } catch (_) {}
+      await plPlayerController.pause();
+      final result = await IOSAirPlayHelper.present(
+        url: session.url,
+        title: title,
+        position: position,
+        localNetwork: true,
+        subtitles: withDanmaku,
+      );
+      if (!isClosed && cid.value == castCid && player == playerAtStart) {
+        await plPlayerController.seekTo(result.position, isSeek: true);
+        if (result.error case final error?) SmartDialog.showToast(error);
+      }
+    } finally {
+      await session.close();
     }
   }
 }

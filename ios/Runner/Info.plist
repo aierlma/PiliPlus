@@ -133,6 +133,20 @@
 		<false/>
 		<key>NSLocalNetworkUsageDescription</key>
 		<string>需要访问本地网络以发现和连接 AirPlay 或 DLNA 投屏设备</string>
+		<key>NSAppTransportSecurity</key>
+		<dict>
+			<key>NSAllowsLocalNetworking</key>
+			<true/>
+			<key>NSExceptionDomains</key>
+			<dict>
+				<key>10.0.0.0/8</key>
+				<dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+				<key>172.16.0.0/12</key>
+				<dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+				<key>192.168.0.0/16</key>
+				<dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+			</dict>
+		</dict>
 		<key>NSBonjourServices</key>
 		<array>
 			<string>_ssdp._udp</string>

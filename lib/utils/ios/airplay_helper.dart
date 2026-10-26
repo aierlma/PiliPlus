@@ -1,3 +1,5 @@
+import 'package:PiliPlus/services/airplay_hls.dart'
+    show isPrivateAirPlayAddress;
 import 'package:flutter/services.dart';
 
 /// Hands a complete media URL to AVKit, bypassing mpv and the loopback BTR proxy.
@@ -11,15 +13,22 @@ abstract final class IOSAirPlayHelper {
     required String url,
     required String title,
     required Duration position,
+    bool localNetwork = false,
+    bool subtitles = false,
   }) async {
     if (_isActive) throw StateError('AirPlay is already open');
     // The TV endpoint can return HTTP even when the CDN supports HTTPS.
     // Change only the scheme, preserving the host and signed query verbatim.
-    final httpsUrl = url.startsWith('http://')
+    final httpsUrl = !localNetwork && url.startsWith('http://')
         ? 'https://${url.substring(7)}'
         : url;
     final uri = Uri.tryParse(httpsUrl);
-    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+    final local =
+        localNetwork &&
+        uri != null &&
+        uri.scheme == 'http' &&
+        isPrivateAirPlayAddress(uri.host);
+    if (uri == null || (!local && uri.scheme != 'https') || uri.host.isEmpty) {
       throw ArgumentError('AirPlay requires a remote HTTPS media URL');
     }
     _isActive = true;
@@ -30,6 +39,8 @@ abstract final class IOSAirPlayHelper {
           'url': httpsUrl,
           'title': title,
           'positionMs': position.inMilliseconds,
+          if (local) 'localNetwork': true,
+          if (subtitles) 'subtitles': true,
         },
       );
       final milliseconds = result?['positionMs'] as int?;
