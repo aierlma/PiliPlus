@@ -445,10 +445,13 @@ class CdnRacer {
         targetHost = parts[0];
         targetPort = int.tryParse(parts[1]);
       }
-      final probeUri = sampleUri.replace(
-        host: targetHost,
-        port: targetPort ?? (sampleUri.hasPort ? sampleUri.port : null),
-      );
+      // Signed Akamai URLs may only be measured on their original host.
+      final probeUri = isAkamaiHost(sampleUri.host)
+          ? sampleUri
+          : sampleUri.replace(
+              host: targetHost,
+              port: targetPort ?? (sampleUri.hasPort ? sampleUri.port : null),
+            );
 
       // 第 1 步：尝试 64KB 标准探测
       final firstRes = await _probeRange(
@@ -510,7 +513,7 @@ class CdnRacer {
     }
   }
 
-  /// 用真实播放地址替换 host 后拉 64KB 实测吞吐；返回最优。全失败 → 返回 null（绝不返回假结果）
+  /// 拉取 64KB 测量节点吞吐；Akamai 仅使用原始签名地址，其他 CDN 可换 host 竞速。
   Future<CdnRaceResult?> raceThroughput({
     required List<String> candidates,
     required String sampleUrl,
@@ -518,9 +521,8 @@ class CdnRacer {
     Iterable<String>? bannedHosts,
     bool ignoreHysteresis = false,
   }) async {
-    // This racer synthesizes URLs by replacing the host. Akamai's signed URL
-    // must stay on its original host; the pool can still use it directly.
-    if (isAkamaiHost(Uri.tryParse(sampleUrl)?.host ?? '')) return null;
+    final sampleHost = Uri.tryParse(sampleUrl)?.host ?? '';
+    final signedSource = isAkamaiHost(sampleHost);
 
     if (isBackoffActive) {
       final remainingSec = max(
@@ -531,11 +533,19 @@ class CdnRacer {
       return null;
     }
 
-    final toProbe = filterCandidates(
-      candidates: candidates,
-      group: group,
-      bannedHosts: bannedHosts,
-    );
+    final List<String> toProbe;
+    if (signedSource) {
+      final banned = bannedHosts?.any(
+            (host) => host.toLowerCase() == sampleHost,
+          ) ?? false;
+      toProbe = banned ? [] : [sampleHost];
+    } else {
+      toProbe = filterCandidates(
+        candidates: candidates,
+        group: group,
+        bannedHosts: bannedHosts,
+      );
+    }
 
     if (toProbe.isEmpty) {
       log('[BTR] CDN 竞速: 全部失败 → 不改变现役状态');
@@ -651,7 +661,10 @@ class CdnRacer {
 
     // 迟滞判断：若 cached 仍在 TTL 内且 新的最快有效速度 < cached.bytesPerSec × hysteresisFactor
     final activeCached = cached;
-    if (!ignoreHysteresis && activeCached != null) {
+    if (!ignoreHysteresis && activeCached != null &&
+        (signedSource
+            ? activeCached.host == sampleHost
+            : !isAkamaiHost(activeCached.host))) {
       final effectiveFastestBps =
           fastest.isEstimated ? fastest.bps * 0.6 : fastest.bps;
       if (effectiveFastestBps < activeCached.bytesPerSec * hysteresisFactor) {

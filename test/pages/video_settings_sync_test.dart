@@ -34,7 +34,8 @@ Future<_RefreshRecorder> _openSetting(
   String title,
 ) async {
   final model = _setting(title);
-  final refresh = _RefreshRecorder();
+  // The signal must belong to the real async zone that awaits the Hive write.
+  final refresh = (await tester.runAsync(() async => _RefreshRecorder()))!;
   await tester.pumpWidget(
     GetMaterialApp(
       home: Scaffold(
