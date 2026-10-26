@@ -45,13 +45,19 @@ void main() {
 
   test('base and backup selection retain their existing behavior', () {
     expect(
-      VideoUtils.getCdnUrl([mcdn, cosov, akamai],
-          defaultCDNService: CDNService.baseUrl),
+      VideoUtils.getCdnUrl([
+        mcdn,
+        cosov,
+        akamai,
+      ], defaultCDNService: CDNService.baseUrl),
       mcdn,
     );
     expect(
-      VideoUtils.getCdnUrl([mcdn, cosov, akamai],
-          defaultCDNService: CDNService.backupUrl),
+      VideoUtils.getCdnUrl([
+        mcdn,
+        cosov,
+        akamai,
+      ], defaultCDNService: CDNService.backupUrl),
       cosov,
     );
   });

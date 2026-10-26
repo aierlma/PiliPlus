@@ -520,7 +520,7 @@ class CdnRacer {
   }) async {
     // This racer synthesizes URLs by replacing the host. Akamai's signed URL
     // must stay on its original host; the pool can still use it directly.
-    if (isAkamaiHost(Uri.parse(sampleUrl).host)) return null;
+    if (isAkamaiHost(Uri.tryParse(sampleUrl)?.host ?? '')) return null;
 
     if (isBackoffActive) {
       final remainingSec = max(
