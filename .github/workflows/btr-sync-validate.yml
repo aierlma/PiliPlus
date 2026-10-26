@@ -6,7 +6,10 @@ on:
     paths:
       - lib/utils/config_archive.dart
       - lib/utils/storage_pref.dart
+      - lib/pages/setting/models/video_settings.dart
+      - lib/pages/video/controller.dart
       - test/utils/storage_pref_test.dart
+      - test/pages/video_settings_sync_test.dart
       - tool/tests/test_maintenance.py
       - .github/workflows/btr-maintain.yml
       - .github/workflows/btr-sync-validate.yml
@@ -19,7 +22,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     env:
-      UPSTREAM: 6a5171f98f6d493f3c07bc7fc5f0952d4bc5a5b4
+      UPSTREAM: 006c0fdd16fd71e6b0ece221b656c0e49e7ccf4c
       BTR_UPSTREAM: 3988e6d081a26120ca79f1e654fe1a3422b7282f
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +52,7 @@ jobs:
       - name: Verify preferences, BTR and complete application
         run: |
           python3 tool/make_btr_mirror.py
-          flutter test --no-pub test/utils/storage_pref_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
+          flutter test --no-pub --dart-define=BTR_SYNC_CANDIDATE=true test/utils/storage_pref_test.dart test/pages/video_settings_sync_test.dart test/utils/video_quality_select_test.dart test/utils/audio_quality_select_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
           dart tool/tests/btr_update_test.dart
           flutter analyze --no-pub --no-fatal-infos
       - name: Build candidate without publishing
