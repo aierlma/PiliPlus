@@ -9,6 +9,11 @@ on:
         default: ""
         type: string
   workflow_dispatch:
+    inputs:
+      airplay_caption_probe:
+        description: "Build temporary AirPlay caption comparison (do not publish)"
+        type: boolean
+        default: false
 
 jobs:
   build-macos-app:
@@ -48,14 +53,14 @@ jobs:
 
       - name: Build iOS
         run: |
-          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --dart-define=AIRPLAY_CAPTION_PROBE=${{ inputs.airplay_caption_probe == true }} --no-pub
           ln -sf ./build/ios/iphoneos Payload
           # make AltSign happy...
           find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
           zip -r9 PiliPlus-BTR_ios_${{env.version}}.ipa Payload/Runner.app
 
       - name: Release
-        if: ${{ github.event.inputs.tag != '' }}
+        if: ${{ github.event.inputs.tag != '' && inputs.airplay_caption_probe != true }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.tag }}

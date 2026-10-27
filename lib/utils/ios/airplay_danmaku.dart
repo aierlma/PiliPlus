@@ -56,6 +56,69 @@ class AirPlayDanmakuStyle {
 typedef _Cue = ({int start, int end, String settings, String text});
 typedef _Moving = ({int time, double width, double velocity});
 
+/// Temporary, build-flag-only receiver comparison. Each 20-second phase has a
+/// persistent heading, so disappearing motion can be separated from lost text.
+String airPlayCaptionProbeVtt(int segment, {int segmentDurationMs = 30000}) {
+  final start = segment * segmentDurationMs;
+  final end = start + segmentDurationMs;
+  final cues = <_Cue>[];
+  void add(int from, int until, String settings, String text) {
+    if (from < end && until > start) {
+      cues.add((start: from, end: until, settings: settings, text: text));
+    }
+  }
+
+  const labels = ['1 静态字幕', '2 单行 5Hz', '3 单行 20Hz', '4 四行 20Hz'];
+  for (var phase = start ~/ 20000; phase * 20000 < end; phase++) {
+    final from = phase * 20000;
+    final mode = phase % 4;
+    add(
+      from,
+      from + 20000,
+      'line:85% position:50% align:center size:90%',
+      '字幕对照：${labels[mode]}',
+    );
+    if (mode == 0) {
+      add(
+        from,
+        from + 20000,
+        'line:10% position:50% align:center size:90%',
+        '这行文字应持续显示二十秒 STATIC',
+      );
+      continue;
+    }
+    final step = mode == 1 ? 200 : 50;
+    for (var elapsed = 0; elapsed < 20000; elapsed += step) {
+      final position = 65 * (1 - (elapsed % 8000) / 8000);
+      for (var lane = 0; lane < (mode == 3 ? 4 : 1); lane++) {
+        add(
+          from + elapsed,
+          from + elapsed + step,
+          'line:${10 + lane * 12}% position:${position.toStringAsFixed(2)}%,line-left align:left size:35%',
+          '移动对照 第${lane + 1}行',
+        );
+      }
+    }
+  }
+  cues.sort((a, b) => a.start.compareTo(b.start));
+  return _vtt(cues);
+}
+
+String _vtt(List<_Cue> cues, [String styles = '']) {
+  final result = StringBuffer(
+    'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\n$styles',
+  );
+  for (final cue in cues) {
+    // RFC 8216 section 3.5 requires complete cue times in every intersecting
+    // segment. Omit optional identifiers instead of changing them per segment.
+    result
+      ..writeln('${_time(cue.start)} --> ${_time(cue.end)} ${cue.settings}')
+      ..writeln(cue.text)
+      ..writeln();
+  }
+  return result.toString();
+}
+
 /// Baseline WebVTT syntax verified on the Apple TV. Keep plain, fixed-width
 /// cues while diagnosing receiver support for CSS and clipped 60 Hz cues.
 /// Native text style rules still supply the user's font size and outline.
@@ -93,8 +156,8 @@ String airPlayDanmakuCompatibleVtt(
       final until = comment.timeMs + (style.staticDuration * 1000).round();
       if (until <= start) continue;
       cues.add((
-        start: max(start, comment.timeMs),
-        end: min(end, until),
+        start: comment.timeMs,
+        end: until,
         settings:
             'line:${mode == 4 ? 90 : 5}% position:50% align:center size:90%',
         text: text,
@@ -115,8 +178,8 @@ String airPlayDanmakuCompatibleVtt(
       if (until <= start || time >= end) continue;
       final position = (100 - width) * (1 - elapsed / duration);
       cues.add((
-        start: max(start, time),
-        end: min(end, until),
+        start: time,
+        end: until,
         settings:
             'line:${(5 + lane * rowHeight).toStringAsFixed(2)}% '
             'position:${position.toStringAsFixed(2)}%,line-left align:left '
@@ -126,17 +189,7 @@ String airPlayDanmakuCompatibleVtt(
     }
   }
   cues.sort((a, b) => a.start.compareTo(b.start));
-  final result = StringBuffer(
-    'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\n',
-  );
-  for (final (index, cue) in cues.indexed) {
-    result
-      ..writeln('${segment}_$index')
-      ..writeln('${_time(cue.start)} --> ${_time(cue.end)} ${cue.settings}')
-      ..writeln(cue.text)
-      ..writeln();
-  }
-  return result.toString();
+  return _vtt(cues);
 }
 
 /// WebVTT has no motion or clipping command. Emit positions at 60 Hz and remove
@@ -209,8 +262,8 @@ String airPlayDanmakuVtt(
             ? 97 - (laneCount - 1 - lane) * rowHeight
             : 3 + lane * rowHeight;
         cues.add((
-          start: max(start, comment.timeMs),
-          end: min(end, until),
+          start: comment.timeMs,
+          end: until,
           settings:
               'line:${line.toStringAsFixed(2)}%,${mode == 4 ? 'end' : 'start'} '
               'position:50%,center align:center size:96%',
@@ -272,8 +325,8 @@ String airPlayDanmakuVtt(
       final position = (x + offsets[first]).clamp(0.5, 99.0);
       final visible = glyphs.sublist(first, last).join('\u2060');
       cues.add((
-        start: max(start, time),
-        end: min(end, until),
+        start: time,
+        end: until,
         settings:
             'line:${(3 + lane * rowHeight).toStringAsFixed(2)}%,start '
             'position:${position.toStringAsFixed(3)}%,line-left align:left '
@@ -288,9 +341,7 @@ String airPlayDanmakuVtt(
     final settings = a.settings.compareTo(b.settings);
     return settings != 0 ? settings : a.text.compareTo(b.text);
   });
-  final result = StringBuffer(
-    'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\nSTYLE\n',
-  );
+  final result = StringBuffer('STYLE\n');
   final alpha = style.opacity.clamp(0.0, 1.0).toStringAsFixed(3);
   final stroke = style.strokeWidth.clamp(0.0, 5.0).toStringAsFixed(2);
   result.writeln(
@@ -306,14 +357,7 @@ String airPlayDanmakuVtt(
     );
   }
   result.writeln();
-  for (final (index, cue) in cues.indexed) {
-    result
-      ..writeln('${segment}_$index')
-      ..writeln('${_time(cue.start)} --> ${_time(cue.end)} ${cue.settings}')
-      ..writeln(cue.text)
-      ..writeln();
-  }
-  return result.toString();
+  return _vtt(cues, result.toString());
 }
 
 String _escape(String text) => text

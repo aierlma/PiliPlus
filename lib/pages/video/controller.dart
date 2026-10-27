@@ -1772,6 +1772,7 @@ class VideoDetailController extends GetxController
       milliseconds: plPlayerController.positionInMilliseconds,
     );
     final withDanmaku = plPlayerController.enableShowDanmaku.value;
+    const captionProbe = bool.fromEnvironment('AIRPLAY_CAPTION_PROBE');
     final view = PlatformDispatcher.instance.views.first;
     final referenceHeight = (view.physicalSize.shortestSide / view.devicePixelRatio)
         .clamp(200.0, 1500.0);
@@ -1823,7 +1824,7 @@ class VideoDetailController extends GetxController
     void trace(String message) {
       if (diagnosticCount++ < 48) BtrLog.log('[AirPlay DM] $message');
     }
-    trace('enabled=$withDanmaku weight=$minimumWeight '
+    trace('enabled=$withDanmaku probe=$captionProbe weight=$minimumWeight '
         'hidden=${danmakuStyle.hideScroll}/${danmakuStyle.hideTop}/${danmakuStyle.hideBottom} '
         'opacity=${danmakuStyle.opacity}');
     final dmSegments = <int, Future<List<DanmakuElem>>>{};
@@ -1871,6 +1872,12 @@ class VideoDetailController extends GetxController
         ),
         subtitles: withDanmaku
             ? (segment) async {
+                if (captionProbe) {
+                  return airPlayCaptionProbeVtt(
+                    segment,
+                    segmentDurationMs: airPlaySubtitleSegmentSeconds * 1000,
+                  );
+                }
                 final comments = <AirPlayComment>[];
                 // DM API data arrives in six-minute blocks; native subtitle
                 // files use short intervals to bound parsing/memory on receivers.
@@ -1944,10 +1951,10 @@ class VideoDetailController extends GetxController
       final result = await IOSAirPlayHelper.present(
         url: session.url,
         title: title,
-        position: position,
+        position: captionProbe ? Duration.zero : position,
         localNetwork: true,
         subtitles: withDanmaku,
-        subtitleStyle: withDanmaku ? danmakuStyle.nativeStyle : null,
+        subtitleStyle: withDanmaku && !captionProbe ? danmakuStyle.nativeStyle : null,
       );
       if (!isClosed && cid.value == castCid && player == playerAtStart) {
         // mpv is paused throughout AirPlay, so no new buffer event is

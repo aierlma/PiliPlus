@@ -113,8 +113,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate, A
     trace("present subtitles=\(enableSubtitles) position=\(args["positionMs"] ?? 0)")
     externalSubtitlesApplied = false
     let item = AVPlayerItem(url: url)
-    if enableSubtitles {
-      let preferences = args["subtitleStyle"] as? [String: Any] ?? [:]
+    if enableSubtitles, let preferences = args["subtitleStyle"] as? [String: Any] {
       var attributes: [String: Any] = [
         kCMTextMarkupAttribute_BackgroundColorARGB as String: [0, 0, 0, 0],
         kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: [0, 0, 0, 0],

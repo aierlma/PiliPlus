@@ -6,6 +6,38 @@ import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('cues spanning a segment boundary retain their complete timing', () {
+    for (final render in [airPlayDanmakuCompatibleVtt, airPlayDanmakuVtt]) {
+      const comments = [
+        AirPlayComment(29423, 1, 'boundary motion'),
+        AirPlayComment(29900, 5, 'boundary static'),
+      ];
+      List<String> crossing(String text) => text
+          .split('\n\n')
+          .where((b) => b.contains('00:00:29.') && b.contains(' --> 00:00:30.'))
+          .toList();
+      final before = render(comments, 0, segmentDurationMs: 30000);
+      final after = render(comments, 1, segmentDurationMs: 30000);
+      expect(crossing(before), isNotEmpty);
+      expect(crossing(after), crossing(before));
+      for (final text in [before, after]) {
+        expect(text, contains('00:00:29.900 --> 00:00:33.900'));
+      }
+    }
+  });
+
+  test('receiver comparison retains phase headings across HLS segments', () {
+    final first = airPlayCaptionProbeVtt(0);
+    final second = airPlayCaptionProbeVtt(1);
+    const phase = '00:00:20.000 --> 00:00:40.000';
+    expect(first, contains(phase));
+    expect(second, contains(phase));
+    expect(first, contains('1 静态字幕'));
+    expect(second, contains('2 单行 5Hz'));
+    expect(second, contains('3 单行 20Hz'));
+    expect(airPlayCaptionProbeVtt(2), contains('4 四行 20Hz'));
+  });
+
   test(
     'compatible captions preserve short-segment timing and type settings',
     () {
@@ -221,7 +253,6 @@ void main() {
     List<String> atThirty(String text) => text
         .split('\n\n')
         .where((b) => b.contains('00:00:30.000 -->'))
-        .map((b) => b.split('\n').skip(1).join('\n'))
         .toList();
     final full = atThirty(render(0, 360000));
     expect(full, isNotEmpty);
