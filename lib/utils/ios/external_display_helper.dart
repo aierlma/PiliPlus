@@ -24,7 +24,11 @@ abstract final class IOSExternalDisplayHelper {
 
   static Future<void> close() async {
     final closed = _closed?.future;
-    if (_active) await _channel.invokeMethod<void>('close');
+    if (_active) {
+      await _channel.invokeMethod<void>('close', {
+        'keepReceiver': _continueCasting,
+      });
+    }
     await closed;
   }
 
@@ -36,7 +40,10 @@ abstract final class IOSExternalDisplayHelper {
     if (!_continueCasting) return false;
     final available =
         await _channel.invokeMethod<bool>('hasExternalDisplay') ?? false;
-    if (!available) _continueCasting = false;
+    if (!available) {
+      _continueCasting = false;
+      await _channel.invokeMethod<void>('close');
+    }
     return available && _continueCasting;
   }
 

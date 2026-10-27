@@ -45,6 +45,10 @@ void main() {
           nativeSession = Completer<Object?>();
           return nativeSession.future;
         case 'close':
+          // iOS 27 removes the external scene when its registration is lost.
+          if ((call.arguments as Map?)?['keepReceiver'] != true) {
+            available = false;
+          }
           if (!nativeSession.isCompleted) nativeSession.complete({});
         case 'hasExternalDisplay':
           return available;
@@ -85,6 +89,32 @@ void main() {
       await command('close');
       await IOSExternalDisplayHelper.close();
       await second;
+      expect(await IOSExternalDisplayHelper.prepareNextVideo(), isFalse);
+    },
+  );
+
+  test(
+    'returning home releases the video but retains casting for a new page',
+    () async {
+      final first = present(10);
+      await Future<void>.delayed(Duration.zero);
+      await command('connected');
+
+      // The old page/player is disposed before a new video page exists.
+      await IOSExternalDisplayHelper.close();
+      await first;
+      expect(IOSExternalDisplayHelper.isActive, isFalse);
+      expect(IOSExternalDisplayHelper.continuesToNextVideo, isTrue);
+      expect(calls.last.arguments, {'keepReceiver': true});
+
+      expect(await IOSExternalDisplayHelper.prepareNextVideo(), isTrue);
+      final second = present(11, showControls: false);
+      await Future<void>.delayed(Duration.zero);
+      await command('connected');
+      await command('close');
+      await IOSExternalDisplayHelper.close();
+      await second;
+      expect(calls.last.arguments, {'keepReceiver': false});
       expect(await IOSExternalDisplayHelper.prepareNextVideo(), isFalse);
     },
   );

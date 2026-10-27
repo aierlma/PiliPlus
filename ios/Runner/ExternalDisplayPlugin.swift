@@ -175,6 +175,14 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
       showControls()
       result(nil)
     case "hasExternalDisplay":
+      if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
+        // A disabled accessory has no connected scene, but the receiver can
+        // still be available. UIScreen.screens alone loses that distinction.
+        recordDiagnostic("receiverAvailability", ["available": registration.isAvailable,
+          "enabled": registration.isEnabled, "screens": UIScreen.screens.count])
+        result(registration.isAvailable)
+        return
+      }
       guard let phone = UIApplication.shared.connectedScenes
         .compactMap({ $0 as? UIWindowScene })
         .first(where: { $0.session.role == .windowApplication })?.screen else {
@@ -183,7 +191,8 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
       }
       result(UIScreen.screens.contains { $0 !== phone })
     case "close":
-      finish()
+      let args = call.arguments as? [String: Any]
+      finish(keepReceiver: args?["keepReceiver"] as? Bool == true)
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -246,13 +255,17 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     self.controls = controls
     controls.update(latestState)
     if #available(iOS 27.0, *) {
-      let configuration = UISceneConfiguration(
-        name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
-      configuration.delegateClass = ExternalDisplaySceneDelegate.self
-      configuration.storyboard = nil
-      // Register on the phone root, which remains visible when the sheet closes.
-      displayRegistration = root.registerSceneAccessory(
-        .externalNonInteractive(sceneConfiguration: configuration))
+      if let registration = displayRegistration as? UISceneAccessoryRegistration {
+        registration.isEnabled = true
+      } else {
+        let configuration = UISceneConfiguration(
+          name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
+        configuration.delegateClass = ExternalDisplaySceneDelegate.self
+        configuration.storyboard = nil
+        // The phone root survives navigation back to the home page.
+        displayRegistration = root.registerSceneAccessory(
+          .externalNonInteractive(sceneConfiguration: configuration))
+      }
     }
     if args["showControls"] as? Bool != false { showControls() }
     // A developer-launched process can exercise the real second engine and
@@ -414,16 +427,22 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     channel.invokeMethod("command", arguments: ["command": "disconnected"])
   }
 
-  private func finish(nextMode: String? = nil) {
+  private func finish(nextMode: String? = nil, keepReceiver: Bool = false) {
+    recordDiagnostic("finish", ["keepReceiver": keepReceiver])
+    if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
+      if keepReceiver {
+        // Release this video's renderer while retaining the user's cast session.
+        registration.isEnabled = false
+      } else {
+        phoneController?.unregisterSceneAccessory(registration)
+        displayRegistration = nil
+      }
+    }
+    if !keepReceiver { phoneController = nil }
     guard let completion else { return }
-    recordDiagnostic("finish")
     diagnosticTimer?.invalidate()
     diagnosticTimer = nil
     self.completion = nil
-    if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
-      phoneController?.unregisterSceneAccessory(registration)
-    }
-    displayRegistration = nil
     let closingControls = controls
     controls = nil
     VideoTextureRegistry.onExternalFrameAvailable = nil
@@ -444,7 +463,6 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     }
     displayEngine = nil
     phoneWindow = nil
-    phoneController = nil
     UIApplication.shared.isIdleTimerDisabled = savedIdleTimer
     diagnostics.append("shared frames: \(frameCount)")
     frameCount = 0
