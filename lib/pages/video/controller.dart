@@ -660,6 +660,20 @@ class VideoDetailController extends GetxController
             onSuccess: (danmakuModel) {
               savedDanmaku = null;
               plPlayerController.danmakuController?.addDanmaku(danmakuModel);
+              IOSExternalDisplayHelper.sendDanmaku(cid.value, [
+                {
+                  'text': danmakuModel.text,
+                  'color': danmakuModel.color.toARGB32(),
+                  'mode': switch (danmakuModel.type) {
+                    .top => 5,
+                    .bottom => 4,
+                    _ => 1,
+                  },
+                  'colorful': danmakuModel.isColorful,
+                  'selfSend': true,
+                  'count': danmakuModel.count,
+                },
+              ]);
             },
             dmConfig: dmConfig,
             onSaveDmConfig: (dmConfig) => this.dmConfig = dmConfig,
