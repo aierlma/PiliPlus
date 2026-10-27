@@ -53,6 +53,14 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     case "showControls":
       showControls()
       result(nil)
+    case "hasExternalDisplay":
+      guard let phone = UIApplication.shared.connectedScenes
+        .compactMap({ $0 as? UIWindowScene })
+        .first(where: { $0.session.role == .windowApplication })?.screen else {
+        result(false)
+        return
+      }
+      result(UIScreen.screens.contains { $0 !== phone })
     case "close":
       finish()
       result(nil)
@@ -116,7 +124,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
       displayRegistration = root.registerSceneAccessory(
         .externalNonInteractive(sceneConfiguration: configuration))
     }
-    showControls()
+    if args["showControls"] as? Bool != false { showControls() }
     // A developer-launched process can exercise the real second engine and
     // texture bridge on the phone when no receiver is available. This affects
     // only this launch, exposes no app setting, and does not establish AirPlay.

@@ -4,6 +4,7 @@ import 'dart:ui' show PlatformDispatcher;
 import 'package:PiliPlus/common/widgets/scale_app.dart';
 import 'package:PiliPlus/services/btr_proxy/range_core.dart' show BtrLog;
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 /// Connects the phone player to a separate TV renderer, keeping comments usable.
 abstract final class IOSExternalDisplayHelper {
@@ -11,15 +12,32 @@ abstract final class IOSExternalDisplayHelper {
     'com.example.piliplus/external-display',
   );
   static bool get isActive => _active;
+  static bool get continuesToNextVideo => _continueCasting;
   static bool _active = false;
+  static bool _continueCasting = false;
   static int? _cid;
   static Future<void> Function()? _update;
+  static Completer<void>? _closed;
 
   static Future<void> showControls() =>
       _channel.invokeMethod<void>('showControls');
 
   static Future<void> close() async {
+    final closed = _closed?.future;
     if (_active) await _channel.invokeMethod<void>('close');
+    await closed;
+  }
+
+  /// Releasing a video's decoder does not cancel the user's casting choice.
+  /// Reconnect only while a real external display is still available.
+  static Future<bool> prepareNextVideo() async {
+    if (!_continueCasting) return false;
+    await close();
+    if (!_continueCasting) return false;
+    final available =
+        await _channel.invokeMethod<bool>('hasExternalDisplay') ?? false;
+    if (!available) _continueCasting = false;
+    return available && _continueCasting;
   }
 
   static void refresh() {
@@ -49,17 +67,22 @@ abstract final class IOSExternalDisplayHelper {
     required String artwork,
     required bool darkMode,
     required int cid,
+    bool showControls = true,
     required Map<String, Object>? Function() state,
     required Future<void> Function(String command, double? value) onCommand,
   }) async {
     if (_active) throw StateError('External display is already open');
-    final binding = ScaledWidgetsFlutterBinding.instance;
+    final binding = WidgetsBinding.instance;
     final view = PlatformDispatcher.instance.views.first;
     final referenceHeight =
         view.physicalSize.shortestSide /
         view.devicePixelRatio /
-        binding.scaleForView(view);
+        (binding is ScaledWidgetsFlutterBinding
+            ? binding.scaleForView(view)
+            : 1);
     _active = true;
+    final closed = Completer<void>();
+    _closed = closed;
     _cid = cid;
     Map<String, Object>? snapshot() {
       final value = state();
@@ -68,7 +91,7 @@ abstract final class IOSExternalDisplayHelper {
     }
 
     Future<void> update() async {
-      if (!_active) return;
+      if (!_active || _closed != closed) return;
       final value = snapshot();
       if (value == null) {
         await close();
@@ -84,12 +107,12 @@ abstract final class IOSExternalDisplayHelper {
     _update = update;
 
     _channel.setMethodCallHandler((call) async {
-      if (call.method != 'command' || !_active) return;
+      if (call.method != 'command' || !_active || _closed != closed) return;
       final args = Map<String, dynamic>.from(call.arguments as Map);
-      await onCommand(
-        args['command'] as String,
-        (args['value'] as num?)?.toDouble(),
-      );
+      final command = args['command'] as String;
+      if (command == 'connected') _continueCasting = true;
+      if (command == 'close') _continueCasting = false;
+      await onCommand(command, (args['value'] as num?)?.toDouble());
       await update();
     });
     final timer = Timer.periodic(const Duration(milliseconds: 200), (_) {
@@ -102,6 +125,7 @@ abstract final class IOSExternalDisplayHelper {
           'title': title,
           'artwork': artwork,
           'darkMode': darkMode,
+          'showControls': showControls,
           'state': snapshot(),
         },
       );
@@ -117,6 +141,8 @@ abstract final class IOSExternalDisplayHelper {
       _active = false;
       _cid = null;
       _update = null;
+      _closed = null;
+      closed.complete();
     }
   }
 }

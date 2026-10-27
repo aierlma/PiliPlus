@@ -872,6 +872,9 @@ class VideoDetailController extends GetxController
     }
 
     defaultST = null;
+    if (Platform.isIOS && IOSExternalDisplayHelper.continuesToNextVideo) {
+      unawaited(_continueExternalDisplay());
+    }
   }
 
   bool isQuerying = false;
@@ -1644,17 +1647,49 @@ class VideoDetailController extends GetxController
   }
 
   bool _casting = false;
+  Completer<void>? _castFinished;
+  bool _resumingExternalDisplay = false;
 
-  Future<void> onCast() async {
+  Future<void> _continueExternalDisplay() async {
+    if (_resumingExternalDisplay) return;
+    _resumingExternalDisplay = true;
+    final nextCid = cid.value;
+    final nextPlayer = player;
+    final playing = plPlayerController.playerStatus.isPlaying;
+    try {
+      if (!await IOSExternalDisplayHelper.prepareNextVideo()) return;
+      await _castFinished?.future;
+      if (isClosed ||
+          cid.value != nextCid ||
+          player != nextPlayer ||
+          !IOSExternalDisplayHelper.continuesToNextVideo) {
+        return;
+      }
+      unawaited(onCast(automatic: true, playWhenConnected: playing));
+    } catch (error) {
+      BtrLog.log('[External display] resume failed: ${BtrLog.redact(error)}');
+    } finally {
+      _resumingExternalDisplay = false;
+    }
+  }
+
+  Future<void> onCast({bool automatic = false, bool? playWhenConnected}) async {
     if (_casting) {
-      if (IOSExternalDisplayHelper.isActive) {
+      if (!automatic && IOSExternalDisplayHelper.isActive) {
         await IOSExternalDisplayHelper.showControls();
       }
       return;
     }
     _casting = true;
+    final finished = Completer<void>();
+    _castFinished = finished;
     try {
-      final mode = Platform.isIOS ? await _castExternalDisplay() : 'dlna';
+      final mode = Platform.isIOS
+          ? await _castExternalDisplay(
+              showControls: !automatic,
+              playWhenConnected: playWhenConnected,
+            )
+          : 'dlna';
       if (mode != null && !isClosed) {
         await _castVideo(mode == 'airplay');
       }
@@ -1663,10 +1698,15 @@ class VideoDetailController extends GetxController
       SmartDialog.showToast('投屏启动失败，请稍后重试');
     } finally {
       _casting = false;
+      _castFinished = null;
+      finished.complete();
     }
   }
 
-  Future<String?> _castExternalDisplay() async {
+  Future<String?> _castExternalDisplay({
+    bool showControls = true,
+    bool? playWhenConnected,
+  }) async {
     final castCid = cid.value;
     final currentPlayer = player;
     if (currentPlayer == null) throw StateError('Video player is not ready');
@@ -1680,7 +1720,8 @@ class VideoDetailController extends GetxController
                     .title ??
                 title;
     } catch (_) {}
-    var playOnConnect = plPlayerController.playerStatus.isPlaying;
+    var playOnConnect =
+        playWhenConnected ?? plPlayerController.playerStatus.isPlaying;
     await plPlayerController.pause();
     await plPlayerController.triggerFullScreen(status: false);
     plPlayerController.showControls.value = false;
@@ -1693,6 +1734,7 @@ class VideoDetailController extends GetxController
         artwork: ImageUtils.safeThumbnailUrl(cover.value),
         darkMode: Theme.of(Get.context!).brightness == Brightness.dark,
         cid: castCid,
+        showControls: showControls,
         state: () {
           if (isClosed || cid.value != castCid || player != currentPlayer) {
             return null;
