@@ -175,6 +175,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
       showControls()
       result(nil)
     case "hasExternalDisplay":
+      #if compiler(>=6.4)
       if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
         // A disabled accessory has no connected scene, but the receiver can
         // still be available. UIScreen.screens alone loses that distinction.
@@ -183,6 +184,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
         result(registration.isAvailable)
         return
       }
+      #endif
       guard let phone = UIApplication.shared.connectedScenes
         .compactMap({ $0 as? UIWindowScene })
         .first(where: { $0.session.role == .windowApplication })?.screen else {
@@ -254,6 +256,9 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     }
     self.controls = controls
     controls.update(latestState)
+    // Xcode 26 builds keep the existing external-display scene path. The
+    // accessory API is available only when building with the iOS 27 SDK.
+    #if compiler(>=6.4)
     if #available(iOS 27.0, *) {
       if let registration = displayRegistration as? UISceneAccessoryRegistration {
         registration.isEnabled = true
@@ -267,6 +272,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
           .externalNonInteractive(sceneConfiguration: configuration))
       }
     }
+    #endif
     if args["showControls"] as? Bool != false { showControls() }
     // A developer-launched process can exercise the real second engine and
     // texture bridge on the phone when no receiver is available. This affects
@@ -429,6 +435,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
 
   private func finish(nextMode: String? = nil, keepReceiver: Bool = false) {
     recordDiagnostic("finish", ["keepReceiver": keepReceiver])
+    #if compiler(>=6.4)
     if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
       if keepReceiver {
         // Release this video's renderer while retaining the user's cast session.
@@ -438,6 +445,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
         displayRegistration = nil
       }
     }
+    #endif
     if !keepReceiver { phoneController = nil }
     guard let completion else { return }
     diagnosticTimer?.invalidate()
@@ -538,7 +546,7 @@ private final class ExternalPlaybackControls: UIViewController {
       UIAction(title: "结束投屏", image: UIImage(systemName: "stop.circle"), attributes: .destructive) { [weak self] _ in
         self?.onCommand?("close", nil)
       },
-      UIAction(title: "连接帮助", image: UIImage(systemName: "questionmark.circle")) { [weak self] _ in
+      UIAction(title: "投屏帮助", image: UIImage(systemName: "questionmark.circle")) { [weak self] _ in
         self?.showConnectionHelp()
       },
       UIMenu(title: "其他投屏方式", options: .displayInline, children: [
@@ -653,7 +661,7 @@ private final class ExternalPlaybackControls: UIViewController {
     guideText.textColor = .secondaryLabel
     guideText.textAlignment = .center
     let help = UIButton(type: .system)
-    help.setTitle("查看连接步骤", for: .normal)
+    help.setTitle("查看投屏帮助", for: .normal)
     help.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
     help.addTarget(self, action: #selector(showConnectionHelp), for: .touchUpInside)
     connectionGuide.axis = .vertical
@@ -833,8 +841,8 @@ private final class ExternalPlaybackControls: UIViewController {
   }
 
   @objc private func showConnectionHelp() {
-    let alert = UIAlertController(title: "连接电视", message:
-      "1. 从屏幕右上角向下轻扫，打开控制中心。\n2. 轻点“屏幕镜像”，选择电视。\n3. 返回 PiliPlus，视频会自动显示在电视上。\n\n播放期间请保持 PiliPlus 在前台。",
+    let alert = UIAlertController(title: "投屏帮助", message:
+      "完整弹幕（当前方式）\n电视显示完整滚动弹幕和独立字幕，手机或 iPad 用于控制播放、看评论。请保持 PiliPlus 在前台。\n\n连接：打开控制中心 → 屏幕镜像 → 选择电视 → 返回 PiliPlus。\n\nAirPlay 视频\n由系统播放器发送视频，可在播放器中选择 AirPlay 设备。弹幕以电视字幕形式显示，样式和兼容性取决于电视，与当前的完整滚动弹幕不同。\n\nDLNA\n将视频地址交给同一局域网中支持 DLNA 的电视播放，适合没有 AirPlay 的设备；不包含本机弹幕和独立字幕。\n\n后两种方式可从右上角“更多投屏选项”切换。",
       preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "好", style: .default))
     present(alert, animated: true)
