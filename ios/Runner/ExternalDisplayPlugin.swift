@@ -1,16 +1,26 @@
 import Flutter
 import UIKit
 
-/// Moves the existing Flutter renderer, including video, subtitles and danmaku,
-/// into the external scene. The phone keeps a separate transport controller.
+/// The phone keeps its app and comments. A small second Flutter engine draws
+/// only the TV canvas, sharing media_kit's existing decoded video texture.
 final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   static weak var instance: ExternalDisplayPlugin?
   private let channel: FlutterMethodChannel
   private var completion: FlutterResult?
   private weak var phoneWindow: UIWindow?
-  private var playerController: UIViewController?
+  private weak var phoneController: UIViewController?
   private var controls: ExternalPlaybackControls?
   private var outputWindow: UIWindow?
+  private var displayEngine: FlutterEngine?
+  private var displayController: FlutterViewController?
+  private var displayChannel: FlutterMethodChannel?
+  private var displayRegistration: AnyObject?
+  private var displayReady = false
+  private var latestState: [String: Any] = [:]
+  private var sourceTextureId: Int64?
+  private var outputTextureId: Int64?
+  private var sharedTexture: ExternalVideoTexture?
+  private var frameCount = 0
   private var savedIdleTimer = false
   private var diagnostics: [String] = []
 
@@ -32,7 +42,19 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     case "present":
       present(call.arguments as? [String: Any] ?? [:], result: result)
     case "update":
-      controls?.update(call.arguments as? [String: Any] ?? [:])
+      latestState = call.arguments as? [String: Any] ?? [:]
+      controls?.update(latestState)
+      bindTexture()
+      sendState()
+      result(nil)
+    case "danmaku", "clearDanmaku":
+      if displayReady { displayChannel?.invokeMethod(call.method, arguments: call.arguments) }
+      result(nil)
+    case "showControls":
+      showControls()
+      result(nil)
+    case "close":
+      finish()
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -55,30 +77,53 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     }
     completion = result
     diagnostics = []
+    latestState = args["state"] as? [String: Any] ?? [:]
     phoneWindow = phone
-    playerController = root
+    phoneController = root
     savedIdleTimer = UIApplication.shared.isIdleTimerDisabled
     UIApplication.shared.isIdleTimerDisabled = true
     let controls = ExternalPlaybackControls()
     controls.videoTitle = args["title"] as? String ?? "PiliPlus BTR"
     controls.artworkURL = args["artwork"] as? String
     controls.overrideUserInterfaceStyle = args["darkMode"] as? Bool == true ? .dark : .light
+    controls.modalPresentationStyle = .pageSheet
+    // Swipe-to-dismiss leaves playback alive; the video's AirPlay button
+    // presents this same controller again.
     controls.onCommand = { [weak self] command, value in
       guard let self else { return }
-      var args: [String: Any] = ["command": command]
-      if let value { args["value"] = value }
-      if command == "close" || command == "airplay" || command == "dlna" {
+      if command == "minimize", self.outputWindow != nil {
+        self.controls?.dismiss(animated: true)
+        return
+      }
+      if command == "close" || command == "minimize" || command == "airplay" || command == "dlna" {
         self.channel.invokeMethod("command", arguments: ["command": "close"]) { [weak self] _ in
-          self?.finish(nextMode: command == "close" ? nil : command)
+          self?.finish(nextMode: command == "airplay" || command == "dlna" ? command : nil)
         }
       } else {
-        self.channel.invokeMethod("command", arguments: args)
+        var arguments: [String: Any] = ["command": command]
+        if let value { arguments["value"] = value }
+        self.channel.invokeMethod("command", arguments: arguments)
       }
     }
     self.controls = controls
-    // Retain the same FlutterViewController/engine and media texture. Moving
-    // the controller changes its viewport without decoding a second video.
-    phone.rootViewController = controls
+    controls.update(latestState)
+    if #available(iOS 27.0, *) {
+      let configuration = UISceneConfiguration(
+        name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
+      configuration.delegateClass = ExternalDisplaySceneDelegate.self
+      configuration.storyboard = nil
+      // Register on the phone root, which remains visible when the sheet closes.
+      displayRegistration = root.registerSceneAccessory(
+        .externalNonInteractive(sceneConfiguration: configuration))
+    }
+    showControls()
+    // A developer-launched process can exercise the real second engine and
+    // texture bridge on the phone when no receiver is available. This affects
+    // only this launch, exposes no app setting, and does not establish AirPlay.
+    if ProcessInfo.processInfo.environment["PILIPLUS_EXTERNAL_DISPLAY_PREVIEW"] == "1" {
+      connectPreview(phone)
+      return
+    }
     for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
       if scene.screen !== phone.windowScene?.screen {
         connect(scene)
@@ -87,32 +132,139 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     }
   }
 
+  private func showControls() {
+    guard let controls, controls.presentingViewController == nil,
+          var presenter = phoneController else { return }
+    while let presented = presenter.presentedViewController { presenter = presented }
+    guard !presenter.isBeingDismissed else { return }
+    presenter.present(controls, animated: true)
+  }
+
+  private func prepareRenderer() -> Bool {
+    if displayEngine != nil { return true }
+    let engine = FlutterEngine(name: "PiliPlus TV", project: nil, allowHeadlessExecution: true)
+    guard engine.run(withEntrypoint: "externalDisplayMain") else {
+      diagnostics.append("external renderer failed to start")
+      engine.destroyContext()
+      return false
+    }
+    // The TV isolate never initializes app services, storage, plugins or a player.
+    VideoTextureRegistry.exclude(engine.textureRegistry, true)
+    displayEngine = engine
+    let channel = FlutterMethodChannel(
+      name: "com.example.piliplus/external-renderer", binaryMessenger: engine.binaryMessenger)
+    displayChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else { result(nil); return }
+      if call.method == "ready" {
+        self.displayReady = true
+        self.bindTexture()
+        self.sendState()
+        result(nil)
+      } else {
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    VideoTextureRegistry.onExternalFrameAvailable = { [weak self] textureId in
+      guard let self, textureId == self.sourceTextureId,
+            let outputId = self.outputTextureId else { return }
+      self.frameCount += 1
+      self.displayEngine?.textureRegistry.textureFrameAvailable(outputId)
+    }
+    VideoTextureRegistry.onTextureUnregistered = { [weak self] textureId in
+      guard let self, textureId == self.sourceTextureId else { return }
+      self.unbindTexture()
+      self.sendState()
+    }
+    let controller = FlutterViewController(engine: engine, nibName: nil, bundle: nil)
+    controller.view.backgroundColor = .black
+    displayController = controller
+    bindTexture()
+    return true
+  }
+
+  private func bindTexture() {
+    guard let engine = displayEngine,
+          let textureId = (latestState["textureId"] as? NSNumber)?.int64Value,
+          textureId != sourceTextureId,
+          let source = VideoTextureRegistry.texture(for: textureId) else { return }
+    unbindTexture()
+    let proxy = ExternalVideoTexture(source)
+    sharedTexture = proxy
+    sourceTextureId = textureId
+    outputTextureId = engine.textureRegistry.register(proxy)
+    if let outputTextureId { engine.textureRegistry.textureFrameAvailable(outputTextureId) }
+    diagnostics.append("shared video texture \(textureId); one media player")
+  }
+
+  private func unbindTexture() {
+    if let textureId = outputTextureId {
+      displayEngine?.textureRegistry.unregisterTexture(textureId)
+    }
+    outputTextureId = nil
+    sourceTextureId = nil
+    sharedTexture = nil
+  }
+
+  private func sendState() {
+    guard displayReady else { return }
+    var state = latestState
+    state["textureId"] = outputTextureId ?? -1
+    displayChannel?.invokeMethod("update", arguments: state)
+  }
+
   func connect(_ scene: UIWindowScene) {
-    guard completion != nil, outputWindow == nil, let root = playerController else { return }
+    guard completion != nil, outputWindow == nil, prepareRenderer(),
+          let controller = displayController else { return }
     scene.screen.overscanCompensation = .none
     let output = UIWindow(windowScene: scene)
     output.backgroundColor = .black
-    output.rootViewController = root
+    output.rootViewController = controller
     outputWindow = output
     output.isHidden = false
-    root.view.setNeedsLayout()
-    root.view.layoutIfNeeded()
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
     let size = scene.screen.bounds.size
     diagnostics.append("external display \(Int(size.width))x\(Int(size.height)) scale=\(scene.screen.scale)")
     controls?.connected = true
+    sendState()
+    channel.invokeMethod("command", arguments: ["command": "connected"])
+  }
+
+  private func connectPreview(_ phone: UIWindow) {
+    guard let scene = phone.windowScene, prepareRenderer(),
+          let controller = displayController else { return }
+    let width = min(360, phone.bounds.width - 16)
+    let height = width * 9 / 16
+    let output = ExternalDisplayPreviewWindow(windowScene: scene)
+    output.frame = CGRect(x: phone.bounds.width - width - 8,
+      y: phone.bounds.height - phone.safeAreaInsets.bottom - height - 12,
+      width: width, height: height)
+    output.windowLevel = .normal + 1
+    output.backgroundColor = .black
+    output.rootViewController = controller
+    outputWindow = output
+    output.isHidden = false
+    let label = UILabel(frame: CGRect(x: 8, y: 4, width: 120, height: 20))
+    label.text = "外屏渲染预览"
+    label.textColor = .white
+    label.font = .systemFont(ofSize: 11, weight: .semibold)
+    label.backgroundColor = UIColor.black.withAlphaComponent(0.65)
+    controller.view.addSubview(label)
+    diagnostics.append("on-phone renderer preview; no AirPlay connection")
+    controls?.connected = true
+    sendState()
     channel.invokeMethod("command", arguments: ["command": "connected"])
   }
 
   func disconnect(_ scene: UIScene) {
     guard outputWindow?.windowScene === scene else { return }
-    // iOS also disconnects this scene when the app enters the background.
-    // Keep the phone controls and renderer ownership so returning can attach
-    // a new external scene without restoring Flutter into a background window.
     outputWindow?.rootViewController = nil
     outputWindow?.isHidden = true
     outputWindow?.windowScene = nil
     outputWindow = nil
     controls?.connected = false
+    displayChannel?.invokeMethod("clearDanmaku", arguments: nil)
     diagnostics.append("external display disconnected; waiting for reconnect")
     channel.invokeMethod("command", arguments: ["command": "disconnected"])
   }
@@ -120,34 +272,63 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   private func finish(nextMode: String? = nil) {
     guard let completion else { return }
     self.completion = nil
-    controls?.stopExternalDisplay()
+    if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
+      phoneController?.unregisterSceneAccessory(registration)
+    }
+    displayRegistration = nil
+    let closingControls = controls
+    controls = nil
+    VideoTextureRegistry.onExternalFrameAvailable = nil
+    VideoTextureRegistry.onTextureUnregistered = nil
+    unbindTexture()
     outputWindow?.rootViewController = nil
     outputWindow?.isHidden = true
     outputWindow?.windowScene = nil
     outputWindow = nil
-    if let phone = phoneWindow, let root = playerController {
-      phone.rootViewController = root
-      phone.makeKeyAndVisible()
-      root.view.setNeedsLayout()
+    displayChannel?.setMethodCallHandler(nil)
+    displayChannel = nil
+    displayReady = false
+    displayController = nil
+    if let engine = displayEngine {
+      let registry = engine.textureRegistry
+      engine.destroyContext()
+      VideoTextureRegistry.exclude(registry, false)
     }
-    playerController = nil
-    controls = nil
+    displayEngine = nil
     phoneWindow = nil
+    phoneController = nil
     UIApplication.shared.isIdleTimerDisabled = savedIdleTimer
+    diagnostics.append("shared frames: \(frameCount)")
+    frameCount = 0
     var response: [String: Any] = ["diagnostics": diagnostics]
     if let nextMode { response["nextMode"] = nextMode }
-    completion(response)
+    if closingControls?.presentingViewController != nil {
+      closingControls?.dismiss(animated: true) { completion(response) }
+    } else {
+      completion(response)
+    }
   }
 }
 
-/// Selected by UIKit for an AirPlay/HDMI display, independent of the phone scene.
+/// The registry owns this proxy; media_kit remains the sole owner of its renderer.
+/// Both Flutter engines consume the same retained pixel buffer, without encoding,
+/// copying the phone UI, or creating a second mpv render context.
+private final class ExternalVideoTexture: NSObject, FlutterTexture {
+  private weak var source: FlutterTexture?
+  init(_ source: FlutterTexture) { self.source = source }
+  func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? { source?.copyPixelBuffer() }
+}
+
+private final class ExternalDisplayPreviewWindow: UIWindow {
+  override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+}
+
 final class ExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDelegate {
   func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
              options connectionOptions: UIScene.ConnectionOptions) {
     guard let scene = scene as? UIWindowScene else { return }
     ExternalDisplayPlugin.instance?.connect(scene)
   }
-
   func sceneDidDisconnect(_ scene: UIScene) {
     ExternalDisplayPlugin.instance?.disconnect(scene)
   }
@@ -174,7 +355,6 @@ private final class ExternalPlaybackControls: UIViewController {
   private var duration = 0.0
   private var subtitleMenuSignature = ""
   private var artworkTask: URLSessionDataTask?
-  private var displayRegistration: AnyObject?
 
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
 
@@ -183,10 +363,13 @@ private final class ExternalPlaybackControls: UIViewController {
     view.backgroundColor = .systemBackground
     view.tintColor = .label
 
-    let close = symbolButton("chevron.down", label: "结束投屏", action: #selector(closeOutput))
+    let close = symbolButton("chevron.down", label: "返回视频详情", action: #selector(closeOutput))
     let more = symbolButton("ellipsis", label: "更多投屏选项", action: nil)
     more.showsMenuAsPrimaryAction = true
     more.menu = UIMenu(children: [
+      UIAction(title: "结束投屏", image: UIImage(systemName: "stop.circle"), attributes: .destructive) { [weak self] _ in
+        self?.onCommand?("close", nil)
+      },
       UIAction(title: "连接帮助", image: UIImage(systemName: "questionmark.circle")) { [weak self] _ in
         self?.showConnectionHelp()
       },
@@ -343,14 +526,7 @@ private final class ExternalPlaybackControls: UIViewController {
     updateConnection()
     update([:])
     loadArtwork()
-    if #available(iOS 27.0, *) {
-      let configuration = UISceneConfiguration(
-        name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
-      configuration.delegateClass = ExternalDisplaySceneDelegate.self
-      configuration.storyboard = nil
-      displayRegistration = registerSceneAccessory(
-        .externalNonInteractive(sceneConfiguration: configuration))
-    }
+
   }
 
   deinit { artworkTask?.cancel() }
@@ -360,14 +536,6 @@ private final class ExternalPlaybackControls: UIViewController {
     status.text = connected ? "正在电视上播放" : "等待连接"
     transport.isHidden = !connected
     connectionGuide.isHidden = connected
-  }
-
-  func stopExternalDisplay() {
-    if #available(iOS 27.0, *),
-       let registration = displayRegistration as? UISceneAccessoryRegistration {
-      unregisterSceneAccessory(registration)
-      displayRegistration = nil
-    }
   }
 
   private func label(_ text: String, style: UIFont.TextStyle) -> UILabel {
@@ -491,5 +659,5 @@ private final class ExternalPlaybackControls: UIViewController {
   @objc private func skipForward() { onCommand?("skip", 15000) }
   @objc private func previewSeek() { updateTimes(Double(slider.value) * duration) }
   @objc private func seek() { onCommand?("seek", Double(slider.value) * duration) }
-  @objc private func closeOutput() { onCommand?("close", nil) }
+  @objc private func closeOutput() { onCommand?("minimize", nil) }
 }

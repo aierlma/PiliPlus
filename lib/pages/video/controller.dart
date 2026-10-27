@@ -1631,7 +1631,12 @@ class VideoDetailController extends GetxController
   bool _casting = false;
 
   Future<void> onCast() async {
-    if (_casting) return;
+    if (_casting) {
+      if (IOSExternalDisplayHelper.isActive) {
+        await IOSExternalDisplayHelper.showControls();
+      }
+      return;
+    }
     _casting = true;
     try {
       final mode = Platform.isIOS ? await _castExternalDisplay() : 'dlna';
@@ -1649,7 +1654,7 @@ class VideoDetailController extends GetxController
   Future<String?> _castExternalDisplay() async {
     final castCid = cid.value;
     final currentPlayer = player;
-    final wasFullScreen = plPlayerController.isFullScreen.value;
+    if (currentPlayer == null) throw StateError('Video player is not ready');
     String title = 'PiliPlus BTR';
     try {
       title = isUgc
@@ -1660,18 +1665,64 @@ class VideoDetailController extends GetxController
                     .title ??
                 title;
     } catch (_) {}
+    var playOnConnect = plPlayerController.playerStatus.isPlaying;
     await plPlayerController.pause();
-    await plPlayerController.triggerFullScreen(status: true);
+    await plPlayerController.triggerFullScreen(status: false);
     plPlayerController.showControls.value = false;
-    var playOnConnect = true;
+    final subtitleSubscription = currentPlayer.stream.subtitle.listen((_) {
+      IOSExternalDisplayHelper.refresh();
+    });
     try {
       return await IOSExternalDisplayHelper.present(
         title: title,
         artwork: ImageUtils.safeThumbnailUrl(cover.value),
         darkMode: Theme.of(Get.context!).brightness == Brightness.dark,
+        cid: castCid,
         state: () {
+          if (isClosed || cid.value != castCid || player != currentPlayer) {
+            return null;
+          }
           final subtitle = vttSubtitlesIndex.value;
+          final state = currentPlayer.state;
+          final speed = plPlayerController.playbackSpeed;
           return {
+            'textureId': plPlayerController.videoController?.id.value ?? -1,
+            'width':
+                plPlayerController.videoController?.rect.value?.width ??
+                state.width,
+            'height':
+                plPlayerController.videoController?.rect.value?.height ??
+                state.height,
+            'speed': speed,
+            'fit': plPlayerController.videoFit.value.boxFit.index,
+            'flipX': plPlayerController.flipX.value,
+            'flipY': plPlayerController.flipY.value,
+            'subtitleText': state.subtitle.toString(),
+            'subtitleStyle': {
+              'fontSize': 16 * plPlayerController.subtitleFontScaleFS,
+              'fontWeight': plPlayerController.subtitleFontWeight,
+              'backgroundOpacity': plPlayerController.subtitleBgOpacity,
+              'strokeWidth': plPlayerController.subtitleStrokeWidth,
+              'horizontalPadding': plPlayerController.subtitlePaddingH,
+              'bottomPadding': plPlayerController.subtitlePaddingB,
+            },
+            'danmakuOptions': {
+              'fontSize': 15 * DanmakuOptions.danmakuFontScaleFS,
+              'fontWeight': DanmakuOptions.danmakuFontWeight,
+              'area': DanmakuOptions.danmakuShowArea,
+              'duration': DanmakuOptions.danmakuDuration / speed,
+              'staticDuration': DanmakuOptions.danmakuStaticDuration / speed,
+              'hideBottom': DanmakuOptions.blockTypes.contains(4),
+              'hideScroll': DanmakuOptions.blockTypes.contains(2),
+              'hideTop': DanmakuOptions.blockTypes.contains(5),
+              'hideSpecial': DanmakuOptions.blockTypes.contains(7),
+              'strokeWidth': DanmakuOptions.danmakuStrokeWidth,
+              'fixedVelocity': DanmakuOptions.danmakuFixedV,
+              'massiveMode': DanmakuOptions.danmakuMassiveMode,
+              'static2Scroll': DanmakuOptions.danmakuStatic2Scroll,
+              'lineHeight': DanmakuOptions.danmakuLineHeight,
+            },
+            'danmakuOpacity': plPlayerController.danmakuOpacity.value,
             'playing': plPlayerController.playerStatus.isPlaying,
             'positionMs': plPlayerController.positionInMilliseconds,
             'durationMs': plPlayerController.durationInMilliseconds,
@@ -1699,6 +1750,7 @@ class VideoDetailController extends GetxController
               playOnConnect = plPlayerController.playerStatus.isPlaying;
               await plPlayerController.pause();
               plPlayerController.danmakuController?.clear();
+              IOSExternalDisplayHelper.clearDanmaku();
             case 'close':
               await plPlayerController.pause();
               plPlayerController.danmakuController?.clear();
@@ -1732,11 +1784,9 @@ class VideoDetailController extends GetxController
         },
       );
     } finally {
+      await subtitleSubscription.cancel();
       if (!isClosed && cid.value == castCid && player == currentPlayer) {
         await plPlayerController.pause();
-        if (!wasFullScreen) {
-          await plPlayerController.triggerFullScreen(status: false);
-        }
       }
     }
   }

@@ -23,6 +23,7 @@ import 'package:PiliPlus/utils/extension/core_palettes_ext.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
 import 'package:PiliPlus/utils/font_utils.dart';
 import 'package:PiliPlus/utils/ios/pip_helper.dart';
+import 'package:PiliPlus/utils/ios/external_display_app.dart';
 import 'package:PiliPlus/utils/json_file_handler.dart';
 import 'package:PiliPlus/utils/max_screen_size.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
@@ -50,6 +51,10 @@ import 'package:screen_brightness_platform_interface/screen_brightness_platform_
 import 'package:window_manager/window_manager.dart';
 
 WebViewEnvironment? webViewEnvironment;
+
+/// Dedicated external-display isolate; the phone remains the only app/player.
+@pragma('vm:entry-point')
+void externalDisplayMain() => runExternalDisplay();
 
 EdgeInsets? tmpPadding;
 
