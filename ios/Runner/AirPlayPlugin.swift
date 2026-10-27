@@ -23,6 +23,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   private var statusObservation: NSKeyValueObservation?
   private var resolutionObservation: NSKeyValueObservation?
   private var externalPlaybackObservation: NSKeyValueObservation?
+  private var timeControlObservation: NSKeyValueObservation?
   private var preparationTimer: Timer?
   private var initialPositionMs = 0
   private var failure: String?
@@ -144,13 +145,14 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     positionLoaded = false
     externalPlaybackObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) {
       [weak self] player, _ in
-      guard player.isExternalPlaybackActive else { return }
       DispatchQueue.main.async {
-        guard let self, self.controller?.player === player,
-          self.enableSubtitles, !self.externalSubtitlesApplied
-        else { return }
-        self.externalSubtitlesApplied = true
-        self.selectDanmaku(item, player: player)
+        self?.selectExternalDanmakuWhenPlaying(item, player: player)
+      }
+    }
+    timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) {
+      [weak self] player, _ in
+      DispatchQueue.main.async {
+        self?.selectExternalDanmakuWhenPlaying(item, player: player)
       }
     }
     resolutionObservation = item.observe(\.presentationSize, options: [.initial, .new]) {
@@ -277,8 +279,20 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
         }) ?? group.options.first,
         self?.controller?.player === player
       else { return }
+      // External AVKit can retain a captions-off display state independently
+      // of the chosen language. This public compatibility API is scoped to
+      // this player; it does not change the system accessibility preferences.
+      player.isClosedCaptionDisplayEnabled = true
       item.select(option, in: group)
     }
+  }
+
+  private func selectExternalDanmakuWhenPlaying(_ item: AVPlayerItem, player: AVPlayer) {
+    guard controller?.player === player, enableSubtitles, !externalSubtitlesApplied,
+      player.isExternalPlaybackActive, player.timeControlStatus == .playing
+    else { return }
+    externalSubtitlesApplied = true
+    selectDanmaku(item, player: player)
   }
 
   private func fail(_ message: String) {
@@ -299,6 +313,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     statusObservation = nil
     resolutionObservation = nil
     externalPlaybackObservation = nil
+    timeControlObservation = nil
     routePicker?.delegate = nil
     routePicker?.removeFromSuperview()
     routePicker = nil

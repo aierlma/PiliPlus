@@ -1937,7 +1937,9 @@ class VideoDetailController extends GetxController
         subtitleStyle: withDanmaku ? danmakuStyle.nativeStyle : null,
       );
       if (!isClosed && cid.value == castCid && player == playerAtStart) {
-        await plPlayerController.seekTo(result.position, isSeek: true);
+        // mpv is paused throughout AirPlay, so no new buffer event is
+        // guaranteed. A gesture seek would wait for that event indefinitely.
+        await plPlayerController.seekTo(result.position, isSeek: false);
         if (result.error case final error?) SmartDialog.showToast(error);
       }
     } finally {
