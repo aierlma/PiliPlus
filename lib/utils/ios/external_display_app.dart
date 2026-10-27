@@ -21,7 +21,8 @@ class ExternalDisplayApp extends StatefulWidget {
   State<ExternalDisplayApp> createState() => _ExternalDisplayAppState();
 }
 
-class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
+class _ExternalDisplayAppState extends State<ExternalDisplayApp>
+    with WidgetsBindingObserver {
   static const _channel = MethodChannel(
     'com.example.piliplus/external-renderer',
   );
@@ -32,6 +33,7 @@ class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _channel.setMethodCallHandler((call) async {
       if (!mounted) return;
       switch (call.method) {
@@ -52,6 +54,13 @@ class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_channel.invokeMethod<void>('ready'));
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_state['diagnostics'] == true) {
+      unawaited(_channel.invokeMethod<void>('lifecycle', state.name));
+    }
   }
 
   void _update(Map<String, dynamic> state) {
@@ -84,6 +93,7 @@ class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _channel.setMethodCallHandler(null);
     _danmaku = null;
     super.dispose();

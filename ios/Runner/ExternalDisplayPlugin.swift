@@ -1,4 +1,5 @@
 import Flutter
+import Metal
 import UIKit
 
 /// The phone keeps its app and comments. A small second Flutter engine draws
@@ -23,6 +24,14 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   private var frameCount = 0
   private var savedIdleTimer = false
   private var diagnostics: [String] = []
+  private let diagnoseLifecycle = ProcessInfo.processInfo.environment[
+    "PILIPLUS_EXTERNAL_DISPLAY_DIAGNOSTICS"] == "1"
+  private let useSceneLifecycle = ProcessInfo.processInfo.environment[
+    "PILIPLUS_EXTERNAL_DISPLAY_SCENE_LIFECYCLE"] == "1"
+  private var diagnosticTimer: Timer?
+  private var diagnosticObservers: [NSObjectProtocol] = []
+  private var diagnosticFile: FileHandle?
+  private var diagnosticQueue: MTLCommandQueue?
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -35,6 +44,118 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   private init(channel: FlutterMethodChannel) {
     self.channel = channel
     super.init()
+    if diagnoseLifecycle {
+      let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("external-display-diagnostic.jsonl")
+      FileManager.default.createFile(atPath: url.path, contents: nil)
+      diagnosticFile = try? FileHandle(forWritingTo: url)
+      diagnosticQueue = MTLCreateSystemDefaultDevice()?.makeCommandQueue()
+      let names: [Notification.Name] = [
+        UIApplication.didEnterBackgroundNotification,
+        UIApplication.willEnterForegroundNotification,
+        UIApplication.willResignActiveNotification,
+        UIApplication.didBecomeActiveNotification,
+        UIScene.didEnterBackgroundNotification,
+        UIScene.willEnterForegroundNotification,
+        UIScene.willDeactivateNotification,
+        UIScene.didActivateNotification,
+        UIScene.didDisconnectNotification,
+      ]
+      diagnosticObservers = names.map { name in
+        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
+          [weak self] notification in
+          guard let self else { return }
+          var value: [String: Any] = ["notification": name.rawValue]
+          if let scene = notification.object as? UIScene {
+            value["role"] = scene.session.role.rawValue
+            value["sceneState"] = scene.activationState.rawValue
+          }
+          self.recordDiagnostic("notification", value)
+          if name == UIApplication.didEnterBackgroundNotification {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+              self?.probeDiagnosticGPU()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private func recordDiagnostic(_ event: String, _ values: [String: Any] = [:]) {
+    guard let file = diagnosticFile else { return }
+    var record = values
+    record["event"] = event
+    record["time"] = Date().timeIntervalSince1970
+    record["appState"] = UIApplication.shared.applicationState.rawValue
+    record["frames"] = frameCount
+    record["positionMs"] = latestState["positionMs"] ?? -1
+    record["playing"] = latestState["playing"] ?? false
+    record["outputScene"] = outputWindow?.windowScene?.activationState.rawValue ?? -99
+    record["outputHidden"] = outputWindow?.isHidden ?? true
+    if let data = try? JSONSerialization.data(withJSONObject: record) {
+      try? file.write(contentsOf: data + Data([10]))
+    }
+  }
+
+  private func probeDiagnosticGPU() {
+    guard completion != nil, let queue = diagnosticQueue,
+          let buffer = queue.device.makeBuffer(length: 64, options: .storageModeShared),
+          let command = queue.makeCommandBuffer(), let blit = command.makeBlitCommandEncoder()
+    else { return }
+    blit.fill(buffer: buffer, range: 0..<64, value: 0)
+    blit.endEncoding()
+    command.addCompletedHandler { [weak self, buffer] command in
+      _ = buffer
+      let error = command.error as NSError?
+      let value: [String: Any] = ["status": command.status.rawValue,
+        "errorCode": error?.code ?? 0, "errorDomain": error?.domain ?? ""]
+      DispatchQueue.main.async { self?.recordDiagnostic("gpu", value) }
+    }
+    command.commit()
+  }
+
+  private func diagnosticPixels() -> String {
+    guard let textureId = sourceTextureId,
+          let pixel = VideoTextureRegistry.texture(for: textureId)?.copyPixelBuffer()?.takeRetainedValue()
+    else { return "none" }
+    CVPixelBufferLockBaseAddress(pixel, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+    let planar = CVPixelBufferIsPlanar(pixel)
+    let base = planar ? CVPixelBufferGetBaseAddressOfPlane(pixel, 0) : CVPixelBufferGetBaseAddress(pixel)
+    let stride = planar ? CVPixelBufferGetBytesPerRowOfPlane(pixel, 0) : CVPixelBufferGetBytesPerRow(pixel)
+    let height = planar ? CVPixelBufferGetHeightOfPlane(pixel, 0) : CVPixelBufferGetHeight(pixel)
+    guard let base, stride > 0, height > 0 else { return "empty" }
+    let bytes = base.assumingMemoryBound(to: UInt8.self)
+    var hash: UInt64 = 14695981039346656037
+    for y in 0..<16 {
+      for x in 0..<16 {
+        hash = (hash ^ UInt64(bytes[(y * height / 16) * stride + x * stride / 16])) &* 1099511628211
+      }
+    }
+    return String(hash, radix: 16)
+  }
+
+  private func bindRendererLifecycle(to scene: UIWindowScene) {
+    guard useSceneLifecycle, let engine = displayEngine, let controller = displayController else { return }
+    // This bounded launch-time probe uses selectors from the pinned Flutter
+    // engine to scope the TV renderer's notifications to its own UIWindowScene.
+    let center = NotificationCenter.default
+    let entries: [(Notification.Name, Notification.Name, String)] = [
+      (UIApplication.didEnterBackgroundNotification, UIScene.didEnterBackgroundNotification, "sceneDidEnterBackground:"),
+      (UIApplication.willEnterForegroundNotification, UIScene.willEnterForegroundNotification, "sceneWillEnterForeground:"),
+      (UIApplication.didBecomeActiveNotification, UIScene.didActivateNotification, "sceneBecameActive:"),
+      (UIApplication.willResignActiveNotification, UIScene.willDeactivateNotification, "sceneWillResignActive:"),
+    ]
+    for (index, entry) in entries.enumerated() {
+      for target: NSObject in index < 2 ? [controller, engine] : [controller] {
+        let selector = NSSelectorFromString(entry.2)
+        guard target.responds(to: selector) else { continue }
+        center.removeObserver(target, name: entry.0, object: nil)
+        center.removeObserver(target, name: entry.1, object: nil)
+        center.addObserver(target, selector: selector, name: entry.1, object: scene)
+      }
+    }
+    recordDiagnostic("boundSceneLifecycle")
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -84,6 +205,15 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
       return
     }
     completion = result
+    if diagnoseLifecycle {
+      recordDiagnostic("present", ["sceneLifecycle": useSceneLifecycle])
+      diagnosticTimer?.invalidate()
+      diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        guard let self else { return }
+        self.recordDiagnostic("sample", ["pixels": self.diagnosticPixels()])
+      }
+      probeDiagnosticGPU()
+    }
     diagnostics = []
     latestState = args["state"] as? [String: Any] ?? [:]
     phoneWindow = phone
@@ -169,6 +299,9 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
         self.bindTexture()
         self.sendState()
         result(nil)
+      } else if call.method == "lifecycle" {
+        self.recordDiagnostic("flutterLifecycle", ["state": call.arguments ?? "unknown"])
+        result(nil)
       } else {
         result(FlutterMethodNotImplemented)
       }
@@ -218,6 +351,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     guard displayReady else { return }
     var state = latestState
     state["textureId"] = outputTextureId ?? -1
+    state["diagnostics"] = diagnoseLifecycle
     displayChannel?.invokeMethod("update", arguments: state)
   }
 
@@ -232,6 +366,8 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     output.isHidden = false
     controller.view.setNeedsLayout()
     controller.view.layoutIfNeeded()
+    bindRendererLifecycle(to: scene)
+    recordDiagnostic("connected")
     let size = scene.screen.bounds.size
     diagnostics.append("external display \(Int(size.width))x\(Int(size.height)) scale=\(scene.screen.scale)")
     controls?.connected = true
@@ -267,6 +403,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
 
   func disconnect(_ scene: UIScene) {
     guard outputWindow?.windowScene === scene else { return }
+    recordDiagnostic("disconnected")
     outputWindow?.rootViewController = nil
     outputWindow?.isHidden = true
     outputWindow?.windowScene = nil
@@ -279,6 +416,9 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
 
   private func finish(nextMode: String? = nil) {
     guard let completion else { return }
+    recordDiagnostic("finish")
+    diagnosticTimer?.invalidate()
+    diagnosticTimer = nil
     self.completion = nil
     if #available(iOS 27.0, *), let registration = displayRegistration as? UISceneAccessoryRegistration {
       phoneController?.unregisterSceneAccessory(registration)

@@ -141,10 +141,6 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate, A
     setTitle(title, for: item)
     let player = AVPlayer(playerItem: item)
     player.allowsExternalPlayback = true
-    // An existing Screen Mirroring connection must hand video to the receiver
-    // instead of mirroring the phone's AVPlayer view and stopping on lock.
-    player.usesExternalPlaybackWhileExternalScreenIsActive = true
-    player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
     // The app's enabled danmaku must not inherit the receiver's captions-off
     // preference. The user can still turn the track off in AVKit controls.
     if enableSubtitles { player.appliesMediaSelectionCriteriaAutomatically = false }
