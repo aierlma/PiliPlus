@@ -60,6 +60,7 @@ import 'package:PiliPlus/utils/feed_back.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/image_utils.dart';
 import 'package:PiliPlus/utils/ios/airplay_helper.dart';
+import 'package:PiliPlus/utils/ios/external_display_helper.dart';
 import 'package:PiliPlus/utils/ios/pip_helper.dart';
 import 'package:PiliPlus/utils/mobile_observer.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
@@ -341,7 +342,7 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (IOSAirPlayHelper.isActive) {
+    if (IOSAirPlayHelper.isActive || IOSExternalDisplayHelper.isActive) {
       _pauseDueToPauseUponEnteringBackgroundMode = false;
       return;
     }

@@ -63,10 +63,13 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     controls.videoTitle = args["title"] as? String ?? "PiliPlus BTR"
     controls.onCommand = { [weak self] command, value in
       guard let self else { return }
-      if command == "close" { self.finish(); return }
       var args: [String: Any] = ["command": command]
       if let value { args["value"] = value }
-      self.channel.invokeMethod("command", arguments: args)
+      if command == "close" {
+        self.channel.invokeMethod("command", arguments: args) { [weak self] _ in self?.finish() }
+      } else {
+        self.channel.invokeMethod("command", arguments: args)
+      }
     }
     self.controls = controls
     // Retain the same FlutterViewController/engine and media texture. Moving
@@ -97,7 +100,17 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   }
 
   func disconnect(_ scene: UIScene) {
-    if outputWindow?.windowScene === scene { finish() }
+    guard outputWindow?.windowScene === scene else { return }
+    // iOS also disconnects this scene when the app enters the background.
+    // Keep the phone controls and renderer ownership so returning can attach
+    // a new external scene without restoring Flutter into a background window.
+    outputWindow?.rootViewController = nil
+    outputWindow?.isHidden = true
+    outputWindow?.windowScene = nil
+    outputWindow = nil
+    controls?.connected = false
+    diagnostics.append("external display disconnected; waiting for reconnect")
+    channel.invokeMethod("command", arguments: ["command": "disconnected"])
   }
 
   private func finish() {
@@ -106,6 +119,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     controls?.stopExternalDisplay()
     outputWindow?.rootViewController = nil
     outputWindow?.isHidden = true
+    outputWindow?.windowScene = nil
     outputWindow = nil
     if let phone = phoneWindow, let root = playerController {
       phone.rootViewController = root

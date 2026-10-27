@@ -1695,6 +1695,7 @@ class VideoDetailController extends GetxController
     await plPlayerController.pause();
     await plPlayerController.triggerFullScreen(status: true);
     plPlayerController.showControls.value = false;
+    var playOnConnect = true;
     try {
       await IOSExternalDisplayHelper.present(
         title: title,
@@ -1716,7 +1717,16 @@ class VideoDetailController extends GetxController
           }
           switch (command) {
             case 'connected':
-              await plPlayerController.play();
+              if (playOnConnect) {
+                await plPlayerController.play();
+              }
+            case 'disconnected':
+              playOnConnect = plPlayerController.playerStatus.isPlaying;
+              await plPlayerController.pause();
+              plPlayerController.danmakuController?.clear();
+            case 'close':
+              await plPlayerController.pause();
+              plPlayerController.danmakuController?.clear();
             case 'togglePlayback':
               if (plPlayerController.playerStatus.isPlaying) {
                 await plPlayerController.pause();
