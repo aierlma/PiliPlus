@@ -6,6 +6,27 @@ import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'compatible captions preserve short-segment timing and type settings',
+    () {
+      final text = airPlayDanmakuCompatibleVtt(
+        [
+          const AirPlayComment(29900, 1, '<hello> & world'),
+          const AirPlayComment(31000, 4, 'hidden bottom'),
+        ],
+        1,
+        style: const AirPlayDanmakuStyle(hideBottom: true),
+        segmentDurationMs: 30000,
+      );
+      expect(text, contains('00:00:30.000 --> 00:00:30.050'));
+      expect(text, contains('&lt;hello&gt; &amp; world'));
+      expect(text, isNot(contains('hidden bottom')));
+      expect(text, isNot(contains('STYLE')));
+      expect(text, isNot(contains('<c.')));
+      expect(text, isNot(contains('00:00:29.')));
+    },
+  );
+
   test('HLS byte ranges preserve the complete MP4 init and SIDX offsets', () {
     // ftyp(16) + moov(24) + a version-0 sidx with two references(56).
     final bytes = Uint8List(96);

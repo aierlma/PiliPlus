@@ -56,6 +56,89 @@ class AirPlayDanmakuStyle {
 typedef _Cue = ({int start, int end, String settings, String text});
 typedef _Moving = ({int time, double width, double velocity});
 
+/// Baseline WebVTT syntax verified on the Apple TV. Keep plain, fixed-width
+/// cues while diagnosing receiver support for CSS and clipped 60 Hz cues.
+/// Native text style rules still supply the user's font size and outline.
+String airPlayDanmakuCompatibleVtt(
+  List<AirPlayComment> comments,
+  int segment, {
+  AirPlayDanmakuStyle style = const AirPlayDanmakuStyle(),
+  double Function(String)? measureWidth,
+  int segmentDurationMs = 360000,
+}) {
+  final start = segment * segmentDurationMs;
+  final end = start + segmentDurationMs;
+  final rowHeight = (style.fontSize * style.lineHeight).clamp(4.0, 30.0);
+  final lanes = List.filled(
+    max(1, (style.area.clamp(0.05, 1.0) * 94 / rowHeight).floor()),
+    0,
+  );
+  final cues = <_Cue>[];
+  final sorted = comments.toList()
+    ..sort((a, b) => a.timeMs.compareTo(b.timeMs));
+  for (final comment in sorted) {
+    if (comment.timeMs >= end ||
+        comment.mode < 1 ||
+        comment.mode > 6 ||
+        comment.text.trim().isEmpty ||
+        style.opacity <= 0)
+      continue;
+    final mode = comment.mode;
+    if ((mode == 4 && style.hideBottom) ||
+        (mode == 5 && style.hideTop) ||
+        (mode != 4 && mode != 5 && style.hideScroll))
+      continue;
+    final text = _escape(comment.text.replaceAll(RegExp(r'[\r\n]+'), ' '));
+    if (mode == 4 || mode == 5) {
+      final until = comment.timeMs + (style.staticDuration * 1000).round();
+      if (until <= start) continue;
+      cues.add((
+        start: max(start, comment.timeMs),
+        end: min(end, until),
+        settings:
+            'line:${mode == 4 ? 90 : 5}% position:50% align:center size:90%',
+        text: text,
+      ));
+      continue;
+    }
+    final lane = lanes.indexWhere((freeAt) => freeAt <= comment.timeMs);
+    if (lane < 0) continue;
+    final duration = max(1000, (style.duration * 1000).round());
+    lanes[lane] = comment.timeMs + duration;
+    if (comment.timeMs + duration <= start) continue;
+    final width =
+        (measureWidth?.call(comment.text) ?? comment.text.runes.length * 3.0)
+            .clamp(15.0, 80.0);
+    for (var elapsed = 0; elapsed < duration; elapsed += 50) {
+      final time = comment.timeMs + elapsed;
+      final until = min(comment.timeMs + duration, time + 50);
+      if (until <= start || time >= end) continue;
+      final position = (100 - width) * (1 - elapsed / duration);
+      cues.add((
+        start: max(start, time),
+        end: min(end, until),
+        settings:
+            'line:${(5 + lane * rowHeight).toStringAsFixed(2)}% '
+            'position:${position.toStringAsFixed(2)}%,line-left align:left '
+            'size:${width.toStringAsFixed(2)}%',
+        text: text,
+      ));
+    }
+  }
+  cues.sort((a, b) => a.start.compareTo(b.start));
+  final result = StringBuffer(
+    'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\n',
+  );
+  for (final (index, cue) in cues.indexed) {
+    result
+      ..writeln('${segment}_$index')
+      ..writeln('${_time(cue.start)} --> ${_time(cue.end)} ${cue.settings}')
+      ..writeln(cue.text)
+      ..writeln();
+  }
+  return result.toString();
+}
+
 /// WebVTT has no motion or clipping command. Emit positions at 60 Hz and remove
 /// whole graphemes beyond either edge. Receivers still control glyph rendering;
 /// this cannot provide sub-glyph clipping or custom canvas/advanced effects.

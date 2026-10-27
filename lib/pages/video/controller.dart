@@ -1819,6 +1819,13 @@ class VideoDetailController extends GetxController
       return width;
     }
 
+    var diagnosticCount = 0;
+    void trace(String message) {
+      if (diagnosticCount++ < 48) BtrLog.log('[AirPlay DM] $message');
+    }
+    trace('enabled=$withDanmaku weight=$minimumWeight '
+        'hidden=${danmakuStyle.hideScroll}/${danmakuStyle.hideTop}/${danmakuStyle.hideBottom} '
+        'opacity=${danmakuStyle.opacity}');
     final dmSegments = <int, Future<List<DanmakuElem>>>{};
     Future<List<DanmakuElem>> loadComments(int index) async {
       final pending = dmSegments.putIfAbsent(index, () async {
@@ -1826,7 +1833,11 @@ class VideoDetailController extends GetxController
           cid: castCid,
           segmentIndex: index + 1,
         );
-        if (result case Success(:final response)) return response.elems;
+        if (result case Success(:final response)) {
+          trace('source $index count=${response.elems.length}');
+          return response.elems;
+        }
+        trace('source $index failed ${result.runtimeType}');
         throw StateError('投屏弹幕加载失败');
       });
       try {
@@ -1845,6 +1856,7 @@ class VideoDetailController extends GetxController
     SmartDialog.showLoading();
     try {
       session = await AirPlayHlsSession.start(
+        onDiagnostic: trace,
         video: AirPlayTrack(
           url: VideoUtils.getCdnUrl(video.playUrls),
           codecs: video.codecs!,
@@ -1902,7 +1914,8 @@ class VideoDetailController extends GetxController
                     );
                   }
                 }
-                return airPlayDanmakuVtt(
+                trace('segment $segment filtered=${comments.length}');
+                return airPlayDanmakuCompatibleVtt(
                   comments,
                   segment,
                   style: danmakuStyle,

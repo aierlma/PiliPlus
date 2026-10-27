@@ -43,6 +43,12 @@ class AirPlayHlsSession {
   AirPlaySubtitleLoader? _subtitleLoader;
   int _subtitleCount = 0;
   bool _closed = false;
+  void Function(String)? _onDiagnostic;
+  int _diagnosticCount = 0;
+
+  void _trace(String message) {
+    if (_diagnosticCount++ < 32) _onDiagnostic?.call(message);
+  }
 
   String get url =>
       'http://${_server.address.address}:${_server.port}/$_token/master.m3u8';
@@ -52,6 +58,7 @@ class AirPlayHlsSession {
     required AirPlayTrack audio,
     AirPlaySubtitleLoader? subtitles,
     InternetAddress? address,
+    void Function(String)? onDiagnostic,
   }) async {
     final bindAddress = address ?? await _wifiAddress();
     final server = await HttpServer.bind(bindAddress, 0);
@@ -63,7 +70,8 @@ class AirPlayHlsSession {
       24,
       (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
     ).join();
-    final session = AirPlayHlsSession._(server, client, token);
+    final session = AirPlayHlsSession._(server, client, token)
+      .._onDiagnostic = onDiagnostic;
     try {
       final indexes = await Future.wait([
         session._prepareTrack('video', video),
@@ -173,6 +181,7 @@ class AirPlayHlsSession {
       }
       final name = path.last;
       if (_playlists[name] case final playlist?) {
+        if (name == 'danmaku.m3u8') _trace('playlist ${request.method}');
         _text(
           response,
           playlist,
@@ -232,9 +241,14 @@ class AirPlayHlsSession {
             _subtitles.keys.firstWhere((key) => key != segment),
           );
         }
+        _trace(
+          'vtt $segment cues=${' --> '.allMatches(text).length} '
+          'bytes=${utf8.encode(text).length}',
+        );
         _text(response, text, 'text/vtt; charset=utf-8', request.method);
       }
-    } catch (_) {
+    } catch (error) {
+      _trace('serve failed ${error.runtimeType}');
       try {
         response.statusCode = HttpStatus.badGateway;
       } catch (_) {}

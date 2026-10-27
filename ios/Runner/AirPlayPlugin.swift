@@ -6,7 +6,7 @@ import UIKit
 
 /// AVKit owns the AirPlay picker, receiver connection and video playback.
 /// The receiver gets a CDN URL or the session's Wi-Fi HLS URL, never loopback BTR.
-final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
+final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate, AVPlayerViewControllerDelegate {
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
       name: "com.example.piliplus/airplay",
@@ -16,7 +16,8 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
 
-  private var controller: AirPlayViewController?
+  private var controller: AVPlayerViewController?
+  private var sessionPlayer: AVPlayer?
   private weak var presenter: UIViewController?
   private var routePicker: AVRoutePickerView?
   private var pickerOpened = false
@@ -48,14 +49,14 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     case "present":
       present(args, result: result)
     case "play":
-      controller?.player?.play()
+      sessionPlayer?.play()
       result(nil)
     case "pause":
-      controller?.player?.pause()
+      sessionPlayer?.pause()
       result(nil)
     case "seek":
       let milliseconds = max(0, (args["positionMs"] as? NSNumber)?.int64Value ?? 0)
-      controller?.player?.seek(to: CMTime(value: milliseconds, timescale: 1000))
+      sessionPlayer?.seek(to: CMTime(value: milliseconds, timescale: 1000))
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -138,12 +139,13 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     // The app's enabled danmaku must not inherit the receiver's captions-off
     // preference. The user can still turn the track off in AVKit controls.
     if enableSubtitles { player.appliesMediaSelectionCriteriaAutomatically = false }
-    let viewController = AirPlayViewController()
+    sessionPlayer = player
+    let viewController = AVPlayerViewController()
     viewController.player = player
     viewController.allowsPictureInPicturePlayback = false
     viewController.updatesNowPlayingInfoCenter = true
     viewController.modalPresentationStyle = .fullScreen
-    viewController.onClose = { [weak self] in self?.finish() }
+    viewController.delegate = self
     controller = viewController
     self.presenter = presenter
     completion = result
@@ -170,7 +172,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       let size = item.presentationSize
       guard size.width > 0, size.height > 0 else { return }
       DispatchQueue.main.async {
-        guard let self, self.controller?.player?.currentItem === item else { return }
+        guard let self, self.sessionPlayer?.currentItem === item else { return }
         // Read the loaded video dimensions rather than the requested quality tier.
         let resolution = "\(Int(size.width.rounded()))×\(Int(size.height.rounded()))"
         self.setTitle("\(resolution) · \(title)", for: item)
@@ -243,7 +245,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   }
 
   private func prepare(_ item: AVPlayerItem, player: AVPlayer) {
-    guard completion != nil, controller?.player === player else { return }
+    guard completion != nil, sessionPlayer === player else { return }
     preparationTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) {
       [weak self] _ in
       self?.fail("投屏视频加载超时，请重试或切换 CDN")
@@ -251,7 +253,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     statusObservation = item.observe(\.status, options: [.initial, .new]) {
       [weak self] item, _ in
       DispatchQueue.main.async {
-        guard let self, self.controller?.player === player else { return }
+        guard let self, self.sessionPlayer === player else { return }
         self.trace("status=\(item.status.rawValue) time=\(CMTimeGetSeconds(player.currentTime()))")
         switch item.status {
         case .readyToPlay:
@@ -269,7 +271,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
             [weak self] finished in
             DispatchQueue.main.async {
               self?.trace("initialSeek finished=\(finished) time=\(CMTimeGetSeconds(player.currentTime()))")
-              guard finished, let self, self.controller?.player === player else { return }
+              guard finished, let self, self.sessionPlayer === player else { return }
               self.positionLoaded = true
               player.play()
             }
@@ -297,7 +299,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
         let option = group.options.first(where: {
           $0.extendedLanguageTag?.hasPrefix("zh") == true
         }) ?? group.options.first,
-        self?.controller?.player === player
+        self?.sessionPlayer === player
       else { return }
       // External AVKit can retain a captions-off display state independently
       // of the chosen language. This public compatibility API is scoped to
@@ -309,7 +311,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   }
 
   private func selectExternalDanmakuWhenPlaying(_ item: AVPlayerItem, player: AVPlayer) {
-    guard controller?.player === player, enableSubtitles, !externalSubtitlesApplied,
+    guard sessionPlayer === player, enableSubtitles, !externalSubtitlesApplied,
       player.isExternalPlaybackActive, player.timeControlStatus == .playing
     else { return }
     externalSubtitlesApplied = true
@@ -338,7 +340,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     routePicker?.delegate = nil
     routePicker?.removeFromSuperview()
     routePicker = nil
-    let player = controller?.player
+    let player = sessionPlayer
     let seconds = player.map { CMTimeGetSeconds($0.currentTime()) } ?? .nan
     let nowPlayingTime = MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime]
     trace("finish loaded=\(positionLoaded) started=\(started) time=\(seconds) nowPlaying=\(nowPlayingTime ?? "nil") external=\(player?.isExternalPlaybackActive ?? false)")
@@ -346,7 +348,8 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       ? Int(seconds * 1000) : initialPositionMs
     player?.pause()
     player?.replaceCurrentItem(with: nil)
-    controller?.onClose = nil
+    controller?.delegate = nil
+    sessionPlayer = nil
     controller = nil
     presenter = nil
     restoreAudioSession()
@@ -356,6 +359,17 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     completion(response)
   }
 
+  func playerViewController(
+    _ playerViewController: AVPlayerViewController,
+    willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
+  ) {
+    coordinator.animate(alongsideTransition: nil) { [weak self, weak playerViewController] context in
+      guard !context.isCancelled, let self,
+        self.controller === playerViewController else { return }
+      self.finish()
+    }
+  }
+
   private func restoreAudioSession() {
     let audioSession = AVAudioSession.sharedInstance()
     try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
@@ -363,16 +377,5 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       try? audioSession.setCategory(saved.0, mode: saved.1, policy: saved.2, options: saved.3)
     }
     audioConfiguration = nil
-  }
-}
-
-private final class AirPlayViewController: AVPlayerViewController {
-  var onClose: (() -> Void)?
-
-  override func viewDidDisappear(_ animated: Bool) {
-    super.viewDidDisappear(animated)
-    if isBeingDismissed || presentingViewController == nil {
-      onClose?()
-    }
   }
 }
