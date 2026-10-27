@@ -1633,42 +1633,9 @@ class VideoDetailController extends GetxController
     if (_casting) return;
     _casting = true;
     try {
-      final mode = Platform.isIOS
-          ? await showModalBottomSheet<String>(
-              context: Get.context!,
-              useRootNavigator: true,
-              builder: (context) => SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.airplay),
-                      title: const Text('AirPlay 视频直投'),
-                      subtitle: const Text('由电视播放视频；弹幕使用字幕轨'),
-                      onTap: () => Navigator.pop(context, 'airplay'),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.connected_tv),
-                      title: const Text('AirPlay 全屏弹幕'),
-                      subtitle: const Text('通过屏幕镜像连接，保留字幕和完整弹幕'),
-                      onTap: () => Navigator.pop(context, 'external'),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.cast),
-                      title: const Text('DLNA 投屏'),
-                      onTap: () => Navigator.pop(context, 'dlna'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : 'dlna';
+      final mode = Platform.isIOS ? await _castExternalDisplay() : 'dlna';
       if (mode != null && !isClosed) {
-        if (mode == 'external') {
-          await _castExternalDisplay();
-        } else {
-          await _castVideo(mode == 'airplay');
-        }
+        await _castVideo(mode == 'airplay');
       }
     } catch (error) {
       BtrLog.log('[AirPlay] start failed: ${BtrLog.redact(error)}');
@@ -1678,7 +1645,7 @@ class VideoDetailController extends GetxController
     }
   }
 
-  Future<void> _castExternalDisplay() async {
+  Future<String?> _castExternalDisplay() async {
     final castCid = cid.value;
     final currentPlayer = player;
     final wasFullScreen = plPlayerController.isFullScreen.value;
@@ -1697,8 +1664,10 @@ class VideoDetailController extends GetxController
     plPlayerController.showControls.value = false;
     var playOnConnect = true;
     try {
-      await IOSExternalDisplayHelper.present(
+      return await IOSExternalDisplayHelper.present(
         title: title,
+        artwork: cover.value,
+        darkMode: Theme.of(Get.context!).brightness == Brightness.dark,
         state: () {
           final subtitle = vttSubtitlesIndex.value;
           return {
@@ -1709,6 +1678,11 @@ class VideoDetailController extends GetxController
             'subtitle': subtitle > 0 && subtitle <= subtitles.length
                 ? subtitles[subtitle - 1].lanDoc ?? subtitles[subtitle - 1].lan
                 : '关闭',
+            'subtitleIndex': subtitle.clamp(0, subtitles.length),
+            'subtitles': [
+              '关闭',
+              for (final item in subtitles) item.lanDoc ?? item.lan,
+            ],
           };
         },
         onCommand: (command, value) async {
@@ -1747,12 +1721,10 @@ class VideoDetailController extends GetxController
               );
             case 'toggleDanmaku':
               plPlayerController.enableShowDanmaku.toggle();
-            case 'nextSubtitle':
-              if (subtitles.isNotEmpty) {
-                await setSubtitle(
-                  (vttSubtitlesIndex.value.clamp(0, subtitles.length) + 1) %
-                      (subtitles.length + 1),
-                );
+            case 'selectSubtitle':
+              final index = value?.toInt();
+              if (index != null && index >= 0 && index <= subtitles.length) {
+                await setSubtitle(index);
               }
           }
           plPlayerController.showControls.value = false;

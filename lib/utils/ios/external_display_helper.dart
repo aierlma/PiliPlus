@@ -13,8 +13,10 @@ abstract final class IOSExternalDisplayHelper {
   static bool get isActive => _active;
   static bool _active = false;
 
-  static Future<void> present({
+  static Future<String?> present({
     required String title,
+    required String artwork,
+    required bool darkMode,
     required Map<String, Object> Function() state,
     required Future<void> Function(String command, double? value) onCommand,
   }) async {
@@ -51,13 +53,14 @@ abstract final class IOSExternalDisplayHelper {
     try {
       final response = await _channel.invokeMapMethod<String, dynamic>(
         'present',
-        {'title': title},
+        {'title': title, 'artwork': artwork, 'darkMode': darkMode},
       );
       if (response?['diagnostics'] case final List diagnostics) {
         for (final message in diagnostics.whereType<String>()) {
           BtrLog.log('[External display] $message');
         }
       }
+      return response?['nextMode'] as String?;
     } finally {
       timer.cancel();
       _channel.setMethodCallHandler(null);

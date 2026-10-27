@@ -61,12 +61,16 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     UIApplication.shared.isIdleTimerDisabled = true
     let controls = ExternalPlaybackControls()
     controls.videoTitle = args["title"] as? String ?? "PiliPlus BTR"
+    controls.artworkURL = args["artwork"] as? String
+    controls.overrideUserInterfaceStyle = args["darkMode"] as? Bool == true ? .dark : .light
     controls.onCommand = { [weak self] command, value in
       guard let self else { return }
       var args: [String: Any] = ["command": command]
       if let value { args["value"] = value }
-      if command == "close" {
-        self.channel.invokeMethod("command", arguments: args) { [weak self] _ in self?.finish() }
+      if command == "close" || command == "airplay" || command == "dlna" {
+        self.channel.invokeMethod("command", arguments: ["command": "close"]) { [weak self] _ in
+          self?.finish(nextMode: command == "close" ? nil : command)
+        }
       } else {
         self.channel.invokeMethod("command", arguments: args)
       }
@@ -113,7 +117,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     channel.invokeMethod("command", arguments: ["command": "disconnected"])
   }
 
-  private func finish() {
+  private func finish(nextMode: String? = nil) {
     guard let completion else { return }
     self.completion = nil
     controls?.stopExternalDisplay()
@@ -130,7 +134,9 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
     controls = nil
     phoneWindow = nil
     UIApplication.shared.isIdleTimerDisabled = savedIdleTimer
-    completion(["diagnostics": diagnostics])
+    var response: [String: Any] = ["diagnostics": diagnostics]
+    if let nextMode { response["nextMode"] = nextMode }
+    completion(response)
   }
 }
 
@@ -149,79 +155,194 @@ final class ExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 private final class ExternalPlaybackControls: UIViewController {
   var videoTitle = "PiliPlus BTR"
+  var artworkURL: String?
   var onCommand: ((String, Double?) -> Void)?
   var connected = false {
-    didSet {
-      status.text = connected ? "正在电视上播放" : "打开控制中心 → 屏幕镜像 → 选择电视\n连接后会自动显示完整视频、字幕和弹幕"
-      transport.isHidden = !connected
-    }
+    didSet { updateConnection() }
   }
   private let status = UILabel()
+  private let artwork = UIImageView()
+  private let artworkPlaceholder = UIImageView(image: UIImage(systemName: "tv"))
   private let transport = UIStackView()
+  private let connectionGuide = UIStackView()
   private let playButton = UIButton(type: .system)
   private let danmakuButton = UIButton(type: .system)
   private let subtitleButton = UIButton(type: .system)
   private let slider = UISlider()
-  private let time = UILabel()
+  private let elapsedTime = UILabel()
+  private let remainingTime = UILabel()
   private var duration = 0.0
+  private var subtitleMenuSignature = ""
+  private var artworkTask: URLSessionDataTask?
   private var displayRegistration: AnyObject?
 
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = .black
+    view.backgroundColor = .systemBackground
+    view.tintColor = .label
+
+    let close = symbolButton("chevron.down", label: "结束投屏", action: #selector(closeOutput))
+    let more = symbolButton("ellipsis", label: "更多投屏选项", action: nil)
+    more.showsMenuAsPrimaryAction = true
+    more.menu = UIMenu(children: [
+      UIAction(title: "连接帮助", image: UIImage(systemName: "questionmark.circle")) { [weak self] _ in
+        self?.showConnectionHelp()
+      },
+      UIMenu(title: "其他投屏方式", options: .displayInline, children: [
+        UIAction(title: "AirPlay 视频", image: UIImage(systemName: "airplayvideo")) { [weak self] _ in
+          self?.onCommand?("airplay", nil)
+        },
+        UIAction(title: "DLNA", image: UIImage(systemName: "tv")) { [weak self] _ in
+          self?.onCommand?("dlna", nil)
+        },
+      ]),
+    ])
+    let heading = label("AirPlay", style: .headline)
+    heading.textAlignment = .center
+    let header = UIStackView(arrangedSubviews: [close, heading, more])
+    header.alignment = .center
+    header.spacing = 16
+    header.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(header)
+
+    let scroll = UIScrollView()
+    scroll.showsVerticalScrollIndicator = false
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(scroll)
+
+    artwork.contentMode = .scaleAspectFill
+    artwork.backgroundColor = .secondarySystemBackground
+    artwork.layer.cornerRadius = 20
+    artwork.layer.cornerCurve = .continuous
+    artwork.clipsToBounds = true
+    artwork.isAccessibilityElement = false
+    artworkPlaceholder.contentMode = .scaleAspectFit
+    artworkPlaceholder.tintColor = .tertiaryLabel
+    artworkPlaceholder.translatesAutoresizingMaskIntoConstraints = false
+    artwork.addSubview(artworkPlaceholder)
+
     let title = UILabel()
     title.text = videoTitle
-    title.textColor = .white
-    title.font = .preferredFont(forTextStyle: .headline)
-    title.numberOfLines = 2
-    title.textAlignment = .center
-    status.textColor = .lightGray
-    status.numberOfLines = 0
-    status.textAlignment = .center
+    title.textColor = .label
+    title.font = .preferredFont(forTextStyle: .title3)
+    title.adjustsFontForContentSizeCategory = true
+    title.numberOfLines = 3
+    status.textColor = .secondaryLabel
     status.font = .preferredFont(forTextStyle: .subheadline)
-    time.textColor = .lightGray
-    time.textAlignment = .center
-    time.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
+    status.adjustsFontForContentSizeCategory = true
+    status.numberOfLines = 0
+    let metadata = UIStackView(arrangedSubviews: [title, status])
+    metadata.axis = .vertical
+    metadata.spacing = 6
+
+    for time in [elapsedTime, remainingTime] {
+      time.textColor = .secondaryLabel
+      time.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(
+        for: .monospacedDigitSystemFont(ofSize: 12, weight: .medium))
+      time.adjustsFontForContentSizeCategory = true
+    }
+    remainingTime.textAlignment = .right
+    let times = UIStackView(arrangedSubviews: [elapsedTime, remainingTime])
+    times.distribution = .fillEqually
     slider.minimumValue = 0
     slider.maximumValue = 1
     slider.accessibilityLabel = "播放进度"
+    slider.addTarget(self, action: #selector(previewSeek), for: .valueChanged)
     slider.addTarget(self, action: #selector(seek), for: [.touchUpInside, .touchUpOutside])
+    let timeline = UIStackView(arrangedSubviews: [slider, times])
+    timeline.axis = .vertical
+    timeline.spacing = 0
+
+    configure(playButton, symbol: "play.fill", pointSize: 30, prominent: true)
+    playButton.accessibilityLabel = "播放"
     playButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
     danmakuButton.addTarget(self, action: #selector(toggleDanmaku), for: .touchUpInside)
-    subtitleButton.addTarget(self, action: #selector(nextSubtitle), for: .touchUpInside)
-    let backward = button("后退 15 秒", action: #selector(skipBackward))
-    let forward = button("前进 15 秒", action: #selector(skipForward))
+    subtitleButton.showsMenuAsPrimaryAction = true
+    let backward = symbolButton("gobackward.15", label: "后退 15 秒", action: #selector(skipBackward))
+    let forward = symbolButton("goforward.15", label: "前进 15 秒", action: #selector(skipForward))
+    backward.configuration = .plain()
+    forward.configuration = .plain()
+    backward.setImage(UIImage(systemName: "gobackward.15", withConfiguration:
+      UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)), for: .normal)
+    forward.setImage(UIImage(systemName: "goforward.15", withConfiguration:
+      UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)), for: .normal)
     let row = UIStackView(arrangedSubviews: [backward, playButton, forward])
-    row.distribution = .fillEqually
-    row.spacing = 16
+    row.alignment = .center
+    row.distribution = .equalSpacing
+    row.isLayoutMarginsRelativeArrangement = true
+    row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 24, bottom: 8, trailing: 24)
     let options = UIStackView(arrangedSubviews: [danmakuButton, subtitleButton])
     options.distribution = .fillEqually
-    options.spacing = 16
+    options.spacing = 12
     transport.axis = .vertical
-    transport.spacing = 14
-    [row, slider, time, options].forEach { transport.addArrangedSubview($0) }
-    let close = button("结束电视输出", action: #selector(closeOutput))
-    let stack = UIStackView(arrangedSubviews: [title, status, transport, close])
+    transport.spacing = 22
+    [timeline, row, options].forEach { transport.addArrangedSubview($0) }
+
+    let guideSymbol = UIImageView(image: UIImage(systemName: "rectangle.on.rectangle",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .light)))
+    guideSymbol.tintColor = .secondaryLabel
+    guideSymbol.contentMode = .scaleAspectFit
+    let guideTitle = label("连接电视", style: .title2)
+    let guideText = label("打开控制中心，轻点“屏幕镜像”，\n然后选择电视。", style: .subheadline)
+    guideText.textColor = .secondaryLabel
+    guideText.textAlignment = .center
+    let help = UIButton(type: .system)
+    help.setTitle("查看连接步骤", for: .normal)
+    help.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
+    help.addTarget(self, action: #selector(showConnectionHelp), for: .touchUpInside)
+    connectionGuide.axis = .vertical
+    connectionGuide.alignment = .center
+    connectionGuide.spacing = 14
+    [guideSymbol, guideTitle, guideText, help].forEach { connectionGuide.addArrangedSubview($0) }
+    connectionGuide.setCustomSpacing(24, after: guideSymbol)
+
+    let stack = UIStackView(arrangedSubviews: [artwork, metadata, transport, connectionGuide])
     stack.axis = .vertical
-    stack.spacing = 22
+    stack.spacing = 28
+    stack.setCustomSpacing(20, after: artwork)
     stack.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(stack)
+    scroll.addSubview(stack)
     NSLayoutConstraint.activate([
-      stack.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-      stack.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
-      stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
-      stack.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
-      stack.widthAnchor.constraint(lessThanOrEqualToConstant: 580),
-      stack.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-      stack.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+      close.widthAnchor.constraint(equalToConstant: 44),
+      more.widthAnchor.constraint(equalToConstant: 44),
+      close.heightAnchor.constraint(equalToConstant: 44),
+      more.heightAnchor.constraint(equalToConstant: 44),
+      scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 24),
+      scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+      scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+      scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+      stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
+      stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -32),
+      stack.centerXAnchor.constraint(equalTo: scroll.frameLayoutGuide.centerXAnchor),
+      stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 28),
+      stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -28),
+      stack.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+      artwork.heightAnchor.constraint(equalTo: artwork.widthAnchor, multiplier: 9.0 / 16),
+      artworkPlaceholder.widthAnchor.constraint(equalToConstant: 48),
+      artworkPlaceholder.heightAnchor.constraint(equalToConstant: 48),
+      artworkPlaceholder.centerXAnchor.constraint(equalTo: artwork.centerXAnchor),
+      artworkPlaceholder.centerYAnchor.constraint(equalTo: artwork.centerYAnchor),
+      playButton.widthAnchor.constraint(equalToConstant: 80),
+      playButton.heightAnchor.constraint(equalToConstant: 80),
+      backward.widthAnchor.constraint(equalToConstant: 56),
+      backward.heightAnchor.constraint(equalToConstant: 56),
+      forward.widthAnchor.constraint(equalToConstant: 56),
+      forward.heightAnchor.constraint(equalToConstant: 56),
+      danmakuButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
+      subtitleButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
+      help.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
     ])
-    let width = stack.widthAnchor.constraint(equalTo: view.safeAreaLayoutGuide.widthAnchor, constant: -48)
+    let width = stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -56)
     width.priority = .defaultHigh
     width.isActive = true
-    connected = false
+    updateConnection()
     update([:])
+    loadArtwork()
     if #available(iOS 27.0, *) {
       let configuration = UISceneConfiguration(
         name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
@@ -232,6 +353,15 @@ private final class ExternalPlaybackControls: UIViewController {
     }
   }
 
+  deinit { artworkTask?.cancel() }
+
+  private func updateConnection() {
+    guard isViewLoaded else { return }
+    status.text = connected ? "正在电视上播放" : "等待连接"
+    transport.isHidden = !connected
+    connectionGuide.isHidden = connected
+  }
+
   func stopExternalDisplay() {
     if #available(iOS 27.0, *),
        let registration = displayRegistration as? UISceneAccessoryRegistration {
@@ -240,34 +370,126 @@ private final class ExternalPlaybackControls: UIViewController {
     }
   }
 
-  private func button(_ title: String, action: Selector) -> UIButton {
+  private func label(_ text: String, style: UIFont.TextStyle) -> UILabel {
+    let label = UILabel()
+    label.text = text
+    label.font = .preferredFont(forTextStyle: style)
+    label.adjustsFontForContentSizeCategory = true
+    label.numberOfLines = 0
+    return label
+  }
+
+  private func configure(_ button: UIButton, symbol: String, pointSize: CGFloat = 17,
+                         prominent: Bool = false) {
+    var configuration: UIButton.Configuration
+    if #available(iOS 26.0, *) {
+      configuration = prominent ? .prominentGlass() : .glass()
+    } else {
+      configuration = prominent ? .filled() : .gray()
+    }
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = prominent ? .label : nil
+    configuration.baseForegroundColor = prominent ? .systemBackground : .label
+    configuration.image = UIImage(systemName: symbol,
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold))
+    button.configuration = configuration
+  }
+
+  private func symbolButton(_ symbol: String, label: String, action: Selector?) -> UIButton {
     let button = UIButton(type: .system)
-    button.setTitle(title, for: .normal)
-    button.addTarget(self, action: action, for: .touchUpInside)
+    configure(button, symbol: symbol)
+    button.accessibilityLabel = label
+    if let action { button.addTarget(self, action: action, for: .touchUpInside) }
     return button
+  }
+
+  private func option(_ button: UIButton, title: String, subtitle: String, symbol: String) {
+    var configuration = UIButton.Configuration.gray()
+    configuration.title = title
+    configuration.subtitle = subtitle
+    configuration.image = UIImage(systemName: symbol)
+    configuration.imagePadding = 10
+    configuration.titlePadding = 3
+    configuration.cornerStyle = .large
+    configuration.baseForegroundColor = .label
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+    button.configuration = configuration
+    button.accessibilityLabel = title
+    button.accessibilityValue = subtitle
+  }
+
+  private func loadArtwork() {
+    guard let raw = artworkURL, !raw.isEmpty,
+          let url = URL(string: raw.hasPrefix("//") ? "https:\(raw)" : raw),
+          ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
+    artworkTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+      guard let data, let image = UIImage(data: data) else { return }
+      DispatchQueue.main.async { [weak self] in
+        self?.artwork.image = image
+        self?.artworkPlaceholder.isHidden = true
+      }
+    }
+    artworkTask?.resume()
   }
 
   func update(_ state: [String: Any]) {
     loadViewIfNeeded()
-    playButton.setTitle(state["playing"] as? Bool == true ? "暂停" : "播放", for: .normal)
-    danmakuButton.setTitle(state["danmaku"] as? Bool == true ? "弹幕：开" : "弹幕：关", for: .normal)
-    subtitleButton.setTitle("字幕：\(state["subtitle"] as? String ?? "关闭")", for: .normal)
+    let playing = state["playing"] as? Bool == true
+    let danmaku = state["danmaku"] as? Bool == true
+    status.text = connected ? (playing ? "正在电视上播放" : "已暂停") : "等待连接"
+    playButton.configuration?.image = UIImage(systemName: playing ? "pause.fill" : "play.fill",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .semibold))
+    playButton.accessibilityLabel = playing ? "暂停" : "播放"
+    option(danmakuButton, title: "弹幕", subtitle: danmaku ? "已开启" : "已关闭",
+           symbol: danmaku ? "text.bubble.fill" : "text.bubble")
+    option(subtitleButton, title: "字幕", subtitle: state["subtitle"] as? String ?? "关闭",
+           symbol: "captions.bubble")
+    let subtitles = state["subtitles"] as? [String] ?? ["关闭"]
+    let selected = state["subtitleIndex"] as? Int ?? 0
+    let signature = "\(selected):\(subtitles)"
+    if signature != subtitleMenuSignature {
+      subtitleMenuSignature = signature
+      subtitleButton.menu = UIMenu(title: "字幕", children: subtitles.enumerated().map { index, title in
+        UIAction(title: title, state: index == selected ? .on : .off) { [weak self] _ in
+          self?.onCommand?("selectSubtitle", Double(index))
+        }
+      })
+    }
     let position = (state["positionMs"] as? NSNumber)?.doubleValue ?? 0
     duration = (state["durationMs"] as? NSNumber)?.doubleValue ?? 0
-    if !slider.isTracking { slider.value = duration > 0 ? Float(position / duration) : 0 }
+    if !slider.isTracking {
+      slider.value = duration > 0 ? Float(position / duration) : 0
+      updateTimes(position)
+    }
     slider.isEnabled = duration > 0
-    time.text = "\(timestamp(position)) / \(timestamp(duration))"
+  }
+
+  private func updateTimes(_ position: Double) {
+    elapsedTime.text = timestamp(position)
+    remainingTime.text = "−\(timestamp(max(0, duration - position)))"
+    slider.accessibilityValue = "\(timestamp(position))，共 \(timestamp(duration))"
   }
 
   private func timestamp(_ milliseconds: Double) -> String {
     let seconds = max(0, Int(milliseconds / 1000))
+    if seconds >= 3600 {
+      return String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
     return String(format: "%d:%02d", seconds / 60, seconds % 60)
+  }
+
+  @objc private func showConnectionHelp() {
+    let alert = UIAlertController(title: "连接电视", message:
+      "1. 从屏幕右上角向下轻扫，打开控制中心。\n2. 轻点“屏幕镜像”，选择电视。\n3. 返回 PiliPlus，视频会自动显示在电视上。\n\n播放期间请保持 PiliPlus 在前台。",
+      preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "好", style: .default))
+    present(alert, animated: true)
   }
   @objc private func togglePlayback() { onCommand?("togglePlayback", nil) }
   @objc private func toggleDanmaku() { onCommand?("toggleDanmaku", nil) }
-  @objc private func nextSubtitle() { onCommand?("nextSubtitle", nil) }
   @objc private func skipBackward() { onCommand?("skip", -15000) }
   @objc private func skipForward() { onCommand?("skip", 15000) }
+  @objc private func previewSeek() { updateTimes(Double(slider.value) * duration) }
   @objc private func seek() { onCommand?("seek", Double(slider.value) * duration) }
   @objc private func closeOutput() { onCommand?("close", nil) }
 }
