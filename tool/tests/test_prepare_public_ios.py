@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_public_ios import prepare
+from prepare_public_ios import PreparationError, prepare
 
 
 class PreparationTests(unittest.TestCase):
@@ -57,6 +57,17 @@ class PreparationTests(unittest.TestCase):
             with self.subTest(stage=failed_stage):
                 with self.assertRaisesRegex(RuntimeError, "signature preparation failed"):
                     prepare(self.app, runner=command)
+
+    def test_native_failure_diagnostic_does_not_echo_private_paths(self):
+        runner = Mock(return_value=subprocess.CompletedProcess(
+            [], 1, stderr=b"private-account/path: Permission denied"))
+        with self.assertRaises(PreparationError) as caught:
+            prepare(self.app, runner=runner)
+        report = caught.exception.report
+        self.assertEqual(report["error_code"], "native_strip_failed")
+        self.assertEqual(report["reason"], "permission_denied")
+        self.assertNotIn("private-account", str(report))
+        self.assertNotIn(str(self.app), str(report))
 
 
 if __name__ == "__main__":
