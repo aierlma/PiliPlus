@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   validate:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 60
     env:
       UPSTREAM: affac5334fc41744894618d9fb53b7101db9532a
