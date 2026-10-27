@@ -1772,7 +1772,9 @@ class VideoDetailController extends GetxController
       milliseconds: plPlayerController.positionInMilliseconds,
     );
     final withDanmaku = plPlayerController.enableShowDanmaku.value;
-    final referenceHeight = min(Get.width, Get.height).clamp(200.0, 1500.0);
+    final view = PlatformDispatcher.instance.views.first;
+    final referenceHeight = (view.physicalSize.shortestSide / view.devicePixelRatio)
+        .clamp(200.0, 1500.0);
     final fontSize = 15 * DanmakuOptions.danmakuFontScaleFS;
     final fontFamily = Get.context == null
         ? null
