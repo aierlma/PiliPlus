@@ -1922,7 +1922,7 @@ class VideoDetailController extends GetxController
                   }
                 }
                 trace('segment $segment filtered=${comments.length}');
-                return airPlayDanmakuCompatibleVtt(
+                return airPlayDanmakuVtt(
                   comments,
                   segment,
                   style: danmakuStyle,

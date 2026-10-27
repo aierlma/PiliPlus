@@ -5,6 +5,18 @@ import 'package:PiliPlus/services/btr_proxy/sidx_parser.dart';
 import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+List<({int start, int end})> cueIntervals(String text) {
+  int milliseconds(String stamp) {
+    final parts = stamp.split(RegExp(r'[:.]')).map(int.parse).toList();
+    return ((parts[0] * 60 + parts[1]) * 60 + parts[2]) * 1000 + parts[3];
+  }
+
+  return RegExp(r'(\d+:\d+:\d+\.\d+) --> (\d+:\d+:\d+\.\d+)')
+      .allMatches(text)
+      .map((m) => (start: milliseconds(m[1]!), end: milliseconds(m[2]!)))
+      .toList();
+}
+
 void main() {
   test('cues spanning a segment boundary retain their complete timing', () {
     for (final render in [airPlayDanmakuCompatibleVtt, airPlayDanmakuVtt]) {
@@ -14,7 +26,9 @@ void main() {
       ];
       List<String> crossing(String text) => text
           .split('\n\n')
-          .where((b) => b.contains('00:00:29.') && b.contains(' --> 00:00:30.'))
+          .where(
+            (b) => cueIntervals(b).any((c) => c.start < 30000 && c.end > 30000),
+          )
           .toList();
       final before = render(comments, 0, segmentDurationMs: 30000);
       final after = render(comments, 1, segmentDurationMs: 30000);
@@ -152,7 +166,7 @@ void main() {
       text,
       startsWith('WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0'),
     );
-    expect(text, contains('00:06:00.000 --> 00:06:00.017'));
+    expect(text, contains('00:06:00.000 --> 00:06:00.100'));
     expect(text, isNot(contains('00:05:59.')));
     expect(text, contains('&lt;hello&gt; &amp; world'));
     expect(text, contains('00:06:01.000 --> 00:06:05.000'));
@@ -177,7 +191,7 @@ void main() {
           .split('\n\n')
           .where((b) => b.contains(' --> '))
           .toList();
-      expect(blocks.length, greaterThan(300));
+      expect(blocks.length, greaterThan(50));
       final positions = blocks
           .map(
             (b) => double.parse(
@@ -235,8 +249,8 @@ void main() {
         style: AirPlayDanmakuStyle(duration: 2, fixedVelocity: fixed),
         measureWidth: (s) => s.length * 4.0,
       );
-      expect(render(false), isNot(contains('00:00:02.')));
-      expect(render(true), contains('00:00:02.'));
+      expect(cueIntervals(render(false)).last.end, lessThanOrEqualTo(2000));
+      expect(cueIntervals(render(true)).last.end, greaterThan(2000));
     },
   );
   test('short subtitle intervals retain the same lanes across boundaries', () {
@@ -259,6 +273,59 @@ void main() {
     expect(atThirty(render(1, 30000)), full);
     final short = render(1, 30000);
     expect(short, isNot(contains('00:00:29.')));
-    expect(short, isNot(contains('00:01:00.017')));
+    expect(short, isNot(contains('00:01:00.100')));
   });
+
+  test('irregular comment times share a bounded receiver update clock', () {
+    final text = airPlayDanmakuVtt([
+      const AirPlayComment(13, 1, '第一条不整齐的弹幕'),
+      const AirPlayComment(37, 1, '第二条不整齐的弹幕'),
+      const AirPlayComment(119, 1, '第三条不整齐的弹幕'),
+    ], 0);
+    final intervals = cueIntervals(text);
+    expect(intervals.length, greaterThan(50));
+    for (final cue in intervals) {
+      expect(cue.start % 100, 0);
+      expect(cue.end - cue.start, inInclusiveRange(1, 100));
+      // No moving cue is duplicated across the native two-second boundary.
+      expect(cue.start < 2000 && cue.end > 2000, isFalse);
+    }
+  });
+
+  test(
+    'dense mixed comments cannot overload the receiver even in massive mode',
+    () {
+      final text = airPlayDanmakuVtt(
+        List.generate(
+          80,
+          (i) => AirPlayComment(13 + i * 37, i % 5 == 0 ? 5 : 1, '弹幕$i'),
+        ),
+        0,
+        style: const AirPlayDanmakuStyle(
+          area: 1,
+          massiveMode: true,
+          duration: 2,
+          staticDuration: 1,
+        ),
+      );
+      final events =
+          <({int time, int delta})>[
+            for (final cue in cueIntervals(text)) ...[
+              (time: cue.start, delta: 1),
+              (time: cue.end, delta: -1),
+            ],
+          ]..sort((a, b) {
+            final time = a.time.compareTo(b.time);
+            return time != 0 ? time : a.delta.compareTo(b.delta);
+          });
+      var active = 0;
+      var maximum = 0;
+      for (final event in events) {
+        active += event.delta;
+        if (active > maximum) maximum = active;
+      }
+      expect(active, 0);
+      expect(maximum, inInclusiveRange(2, 4));
+    },
+  );
 }

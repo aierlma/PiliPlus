@@ -56,6 +56,9 @@ class AirPlayDanmakuStyle {
 typedef _Cue = ({int start, int end, String settings, String text});
 typedef _Moving = ({int time, double width, double velocity});
 
+const _captionStepMs = 100;
+const _maxActiveComments = 4;
+
 /// Temporary, build-flag-only receiver comparison. Each 20-second phase has a
 /// persistent heading, so disappearing motion can be separated from lost text.
 String airPlayCaptionProbeVtt(int segment, {int segmentDurationMs = 30000}) {
@@ -192,9 +195,10 @@ String airPlayDanmakuCompatibleVtt(
   return _vtt(cues);
 }
 
-/// WebVTT has no motion or clipping command. Emit positions at 60 Hz and remove
-/// whole graphemes beyond either edge. Receivers still control glyph rendering;
-/// this cannot provide sub-glyph clipping or custom canvas/advanced effects.
+/// WebVTT has no motion or clipping command. Update all moving cues on one
+/// bounded 10 Hz clock and remove whole graphemes beyond either edge. Independent
+/// per-comment clocks stall the Apple TV caption renderer even at low density.
+/// Receivers still control glyph rendering, so clipping is by whole grapheme.
 String airPlayDanmakuVtt(
   List<AirPlayComment> comments,
   int segment, {
@@ -213,6 +217,7 @@ String airPlayDanmakuVtt(
   );
   final moving = List<_Moving?>.filled(laneCount, null);
   final fixed = List.filled(laneCount, 0);
+  final activeUntil = List.filled(_maxActiveComments, 0);
   final sorted = comments.toList()
     ..sort((a, b) => a.timeMs.compareTo(b.timeMs));
   final colors = <int>{};
@@ -238,6 +243,8 @@ String airPlayDanmakuVtt(
         (mode == 5 && style.hideTop) ||
         (mode != 4 && mode != 5 && style.hideScroll))
       continue;
+    final slot = activeUntil.indexWhere((until) => until <= comment.timeMs);
+    if (slot < 0) continue;
     final plain = comment.text.replaceAll(RegExp(r'[\r\n]+'), ' ');
     final color = style.whiteOnly ? 0xffffff : comment.color & 0xffffff;
     final hex = color.toRadixString(16).padLeft(6, '0');
@@ -257,6 +264,7 @@ String airPlayDanmakuVtt(
       if (lane >= 0) {
         final until = comment.timeMs + (style.staticDuration * 1000).round();
         fixed[lane] = until;
+        activeUntil[slot] = until;
         if (until <= start) continue;
         final line = mode == 4
             ? 97 - (laneCount - 1 - lane) * rowHeight
@@ -299,16 +307,18 @@ String airPlayDanmakuVtt(
     });
     if (lane < 0 && style.massiveMode) lane = overflowLane++ % laneCount;
     if (lane < 0) continue;
+    activeUntil[slot] = comment.timeMs + travelMs;
     moving[lane] = (time: comment.timeMs, width: width, velocity: velocity);
     if (comment.timeMs + travelMs <= start) continue;
-    final frames = (travelMs * 60 / 1000).ceil();
-    for (var frame = 0; frame < frames; frame++) {
-      final elapsed = (frame * 1000 / 60).round();
-      final time = comment.timeMs + elapsed;
-      final until = min(
-        comment.timeMs + travelMs,
-        comment.timeMs + ((frame + 1) * 1000 / 60).round(),
-      );
+    for (
+      var time =
+          ((comment.timeMs + _captionStepMs - 1) ~/ _captionStepMs) *
+          _captionStepMs;
+      time < comment.timeMs + travelMs;
+      time += _captionStepMs
+    ) {
+      final elapsed = time - comment.timeMs;
+      final until = min(comment.timeMs + travelMs, time + _captionStepMs);
       if (until <= start || time >= end) continue;
       final x = 100 - elapsed * velocity;
       var first = 0;
