@@ -11,6 +11,12 @@ on:
       - test/utils/storage_pref_test.dart
       - test/pages/video_settings_sync_test.dart
       - tool/tests/test_maintenance.py
+      - tool/tests/test_release_privacy.py
+      - tool/tests/test_privacy_workflows.py
+      - tool/release_privacy.py
+      - tool/release-privacy-policy.json
+      - tool/prepare_public_ios.py
+      - tool/check_public_identity.py
       - .github/workflows/btr-maintain.yml
       - .github/workflows/btr-sync-validate.yml
 
@@ -31,6 +37,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact PR head and replay blocked sources
+        env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
         run: |
           python3 -m unittest discover -s tool/tests -v
           git config user.name 'github-actions[bot]'
@@ -38,6 +46,7 @@ jobs:
           git fetch https://github.com/bggRGjQaUbCoE/PiliPlus.git "$UPSTREAM"
           git fetch https://github.com/nishuodedui1145-del/PiliPlus.git "$BTR_UPSTREAM"
           python3 tool/prepare_btr_sync.py --base "$(git rev-parse HEAD)" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
+          python3 tool/check_public_identity.py
           git merge-base --is-ancestor "$UPSTREAM" HEAD
           git merge-base --is-ancestor "$BTR_UPSTREAM" HEAD
           python3 tool/check_btr.py
@@ -58,4 +67,13 @@ jobs:
       - name: Build candidate without publishing
         shell: pwsh
         run: lib/scripts/build.ps1 btr-ios
-      - run: flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+      - name: Build and privacy-check candidate without uploading
+        run: |
+          set -euo pipefail
+          flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+          python3 tool/prepare_public_ios.py build/ios/iphoneos/Runner.app
+          mkdir -p build/privacy-check/Payload
+          ditto build/ios/iphoneos/Runner.app build/privacy-check/Payload/Runner.app
+          ipa="build/privacy-check/PiliPlus-BTR-validation.ipa"
+          (cd build/privacy-check && zip -q -r9 PiliPlus-BTR-validation.ipa Payload)
+          python3 tool/release_privacy.py "$ipa" --allow-home-user runner --policy tool/release-privacy-policy.json --report build/privacy-check/privacy-report.json

@@ -60,6 +60,7 @@ jobs:
           persist-credentials: false
       - name: Prepare candidate merge
         env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
           BASE: ${{ needs.plan.outputs.base }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
           BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
@@ -69,6 +70,7 @@ jobs:
           git fetch https://github.com/bggRGjQaUbCoE/PiliPlus.git "$UPSTREAM"
           git fetch https://github.com/nishuodedui1145-del/PiliPlus.git "$BTR_UPSTREAM"
           python3 tool/prepare_btr_sync.py --base "$BASE" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
+          python3 tool/check_public_identity.py
           python3 tool/check_btr.py
           python3 -m unittest discover -s tool/tests -v
           git branch btr-candidate HEAD
@@ -91,12 +93,14 @@ jobs:
         shell: pwsh
         run: lib/scripts/build.ps1
       - name: Build and verify unsigned IPA
+        id: package
         env:
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
           BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |
+          set -euo pipefail
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
-          find build/ios/iphoneos/Runner.app/Frameworks -type d -name '*.framework' -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
+          python3 tool/prepare_public_ios.py build/ios/iphoneos/Runner.app
           mkdir -p package/Payload
           ditto build/ios/iphoneos/Runner.app package/Payload/Runner.app
           app_version="${version%+*}"
@@ -104,10 +108,17 @@ jobs:
           ipa="PiliPlus-BTR-ios-${app_version}-btr.${app_build}-unsigned.ipa"
           (cd package && zip -q -r9 "../dist/$ipa" Payload)
           python3 tool/verify_btr_ipa.py "dist/$ipa" --version "$app_version" --build "$app_build" --source "$(git rev-parse HEAD)" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM" --out dist/build-info.json
+          python3 tool/release_privacy.py "dist/$ipa" --allow-home-user runner --policy tool/release-privacy-policy.json --report dist/privacy-report.json
+          echo "ipa_path=dist/$ipa" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: validated-btr-ios
-          path: dist/
+          path: |
+            ${{ steps.package.outputs.ipa_path }}
+            dist/build-info.json
+            dist/candidate.bundle
+            dist/privacy-report.json
+          if-no-files-found: error
           retention-days: 14
 
   publish:
@@ -129,11 +140,19 @@ jobs:
           path: dist/
       - name: Publish only the validated candidate
         env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ needs.plan.outputs.base }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
           BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |
+          set -euo pipefail
+          python3 tool/check_public_identity.py
+          shopt -s nullglob
+          ipa_files=(dist/*.ipa)
+          test "${#ipa_files[@]}" -eq 1
+          ipa="${ipa_files[0]}"
+          python3 tool/release_privacy.py "$ipa" --allow-home-user runner --policy tool/release-privacy-policy.json --report dist/publish-privacy-report.json
           gh auth setup-git
           python3 tool/btr_release.py publish --base "$BASE" --upstream "$UPSTREAM" --btr-upstream "$BTR_UPSTREAM"
 

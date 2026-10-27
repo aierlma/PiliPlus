@@ -10,6 +10,9 @@ name: Build for iOS 14 (BTR)
 
 on:
   workflow_call:
+    secrets:
+      RELEASE_PRIVATE_TERMS_JSON:
+        required: true
     inputs:
       tag:
         description: "tag"
@@ -36,6 +39,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify public source identity
+        env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
+        run: python3 tool/check_public_identity.py
+
       - name: Setup flutter
         uses: subosito/flutter-action@v2
         with:
@@ -59,13 +67,17 @@ jobs:
         run: lib/scripts/patch_ios14.ps1 iOS
 
       - name: Build iOS
+        id: package
         run: |
+          set -euo pipefail
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
           bash lib/scripts/check_ios14_minos.sh build/ios/iphoneos/Runner.app 14.0
+          python3 tool/prepare_public_ios.py build/ios/iphoneos/Runner.app
           ln -sf ./build/ios/iphoneos Payload
-          # make AltSign happy...
-          find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
-          zip -r9 PiliPlus-BTR-ios14_${{env.version}}.ipa Payload/Runner.app
+          ipa="PiliPlus-BTR-ios14_${version}.ipa"
+          zip -r9 "$ipa" Payload/Runner.app
+          python3 tool/release_privacy.py "$ipa" --allow-home-user runner --policy tool/release-privacy-policy.json --report privacy-report.json
+          echo "ipa_path=$ipa" >> "$GITHUB_OUTPUT"
 
       - name: Release
         if: ${{ github.event.inputs.tag != '' }}
@@ -74,12 +86,14 @@ jobs:
           tag_name: ${{ github.event.inputs.tag }}
           name: ${{ github.event.inputs.tag }}
           files: |
-            PiliPlus-BTR-ios14_*.ipa
+            ${{ steps.package.outputs.ipa_path }}
 
       - name: Upload ios14 release
         uses: actions/upload-artifact@v7
         with:
           archive: false
           name: iOS14-release
-          path: PiliPlus-BTR-ios14_*.ipa
+          path: ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error
           retention-days: 14
+

@@ -2,6 +2,9 @@ name: Build for iOS
 
 on:
   workflow_call:
+    secrets:
+      RELEASE_PRIVATE_TERMS_JSON:
+        required: true
     inputs:
       tag:
         description: "tag"
@@ -26,7 +29,10 @@ jobs:
           fetch-depth: 0
 
       - name: Verify pristine source and release tooling
+        env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
         run: |
+          python3 tool/check_public_identity.py
           python3 tool/check_btr.py
           python3 -m unittest discover -s tool/tests -v
 
@@ -53,12 +59,16 @@ jobs:
           flutter analyze --no-pub --no-fatal-infos
 
       - name: Build iOS
+        id: package
         run: |
+          set -euo pipefail
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --dart-define=AIRPLAY_CAPTION_PROBE=${{ inputs.airplay_caption_probe == true }} --no-pub
+          python3 tool/prepare_public_ios.py build/ios/iphoneos/Runner.app
           ln -sf ./build/ios/iphoneos Payload
-          # make AltSign happy...
-          find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
-          zip -r9 PiliPlus-BTR_ios_${{env.version}}.ipa Payload/Runner.app
+          ipa="PiliPlus-BTR_ios_${version}.ipa"
+          zip -r9 "$ipa" Payload/Runner.app
+          python3 tool/release_privacy.py "$ipa" --allow-home-user runner --policy tool/release-privacy-policy.json --report privacy-report.json
+          echo "ipa_path=$ipa" >> "$GITHUB_OUTPUT"
 
       - name: Release
         if: ${{ github.event.inputs.tag != '' && inputs.airplay_caption_probe != true }}
@@ -67,11 +77,12 @@ jobs:
           tag_name: ${{ github.event.inputs.tag }}
           name: ${{ github.event.inputs.tag }}
           files: |
-            PiliPlus-BTR_ios_*.ipa
+            ${{ steps.package.outputs.ipa_path }}
 
       - name: Upload ios release
         uses: actions/upload-artifact@v7
         with:
           archive: false
           name: iOS-release
-          path: PiliPlus-BTR_ios_*.ipa
+          path: ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error

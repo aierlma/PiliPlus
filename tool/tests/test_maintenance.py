@@ -286,7 +286,7 @@ class SyncTests(unittest.TestCase):
     def test_docs_only_upstream_sync_advances_history_without_release(self):
         with tempfile.TemporaryDirectory() as remote:
             upstream, candidate = self.stage_sync_candidate(remote, "shared source")
-            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "close_resolved_failures"), patch.object(btr_release, "api", side_effect=AssertionError("No release should be created")):
+            with patch.object(btr_release, "verify_publishing_identity"), patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "close_resolved_failures"), patch.object(btr_release, "api", side_effect=AssertionError("No release should be created")):
                 btr_release.publish(self.base, upstream, self.author_base)
             self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], candidate)
             self.assertEqual(git("ls-remote", "origin", "refs/tags/*"), "")
@@ -299,7 +299,7 @@ class SyncTests(unittest.TestCase):
             info = json.loads(info_path.read_text())
             info["sha256"] = "invalid"
             info_path.write_text(json.dumps(info))
-            with patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "blocked", return_value=None):
+            with patch.object(btr_release, "verify_publishing_identity"), patch.object(btr_release, "released_source", return_value=self.base), patch.object(btr_release, "blocked", return_value=None):
                 with self.assertRaisesRegex(ValueError, "verified IPA metadata"):
                     btr_release.publish(self.base, upstream, self.author_base)
             self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], self.base)
@@ -316,7 +316,7 @@ class SyncTests(unittest.TestCase):
                     Path("dist/previous-build-info.json").write_text(json.dumps(info))
                     return subprocess.CompletedProcess(args, 0, "", "")
                 return original_run(*args, **kwargs)
-            with patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "api", return_value={"tag_name": "previous"}), patch.object(btr_release, "released_source", return_value=self.base):
+            with patch.object(btr_release, "verify_publishing_identity"), patch.object(btr_release, "run", side_effect=command), patch.object(btr_release, "api", return_value={"tag_name": "previous"}), patch.object(btr_release, "released_source", return_value=self.base):
                 with self.assertRaisesRegex(ValueError, "version must increase"):
                     btr_release.publish(self.base, upstream, self.author_base)
             self.assertEqual(git("ls-remote", "origin", "refs/heads/btr").split()[0], self.base)

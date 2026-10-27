@@ -1,0 +1,12 @@
+{
+  "line_exceptions": [
+    {
+      "path": "lib/http/api.dart",
+      "sha256": "8df571ea26f7514ebd225cfb669ee04ec9020d271c1fc6d30dd54d32e95b054b",
+      "verified_upstream_commits": [
+        "d680e3f95cf777ff20492dd2a23c89264481dca0",
+        "97663e3ab5532b37748a6ec4c3567ae209a777d0"
+      ]
+    }
+  ]
+}

@@ -1,14 +1,23 @@
 """GitHub-hosted planning, gated publication, and durable failure records."""
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = "aierlma/PiliPlus"
 MAINTENANCE_DIRECTORIES = (".github/", ".vscode/", "tool/", "test/", "docs/")
 MAINTENANCE_FILES = {".gitattributes", ".gitignore", "analysis_options.yaml"}
+PUBLIC_ARTIFACT_INPUTS = {
+    "tool/prepare_public_ios.py", "tool/release_privacy.py",
+    "tool/release-privacy-policy.json",
+}
+PRIVACY_POLICY = Path(__file__).with_name("release-privacy-policy.json")
 
 
 def run(*args, check=True):
@@ -22,6 +31,76 @@ def api(path):
             return None
         raise RuntimeError(result.stderr)
     return json.loads(result.stdout)
+
+
+def verify_publishing_identity():
+    """Authenticate the publisher, including Actions installation tokens."""
+    actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    if actions and os.environ.get("GITHUB_REPOSITORY") != REPO:
+        raise ValueError("CI publication is restricted to the personal repository")
+    try:
+        user = run("gh", "api", "user", check=False)
+        if user.returncode == 0:
+            login = json.loads(user.stdout)["login"].casefold()
+            if login != "aierlma" and not (actions and login == "github-actions[bot]"):
+                raise ValueError
+        elif not actions:
+            raise ValueError
+        if actions:
+            # GITHUB_TOKEN may not implement /user. Do not trust environment
+            # variables alone: the active token must have push access here.
+            repository = run("gh", "api", f"repos/{REPO}", check=False)
+            data = json.loads(repository.stdout)
+            if (repository.returncode or data.get("full_name") != REPO
+                    or data.get("permissions", {}).get("push") is not True):
+                raise ValueError
+    except Exception:
+        # gh errors and unexpected API values must not echo account details.
+        raise ValueError("GitHub publishing identity or repository permission could not be verified") from None
+
+
+def stage_ipa(source, destination):
+    """Copy a regular input into our private, exclusive upload directory."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        with os.fdopen(os.open(source, flags), "rb") as original:
+            if not stat.S_ISREG(os.fstat(original.fileno()).st_mode):
+                raise ValueError
+            with destination.open("xb") as staged:
+                shutil.copyfileobj(original, staged)
+        destination.chmod(0o400)
+    except Exception:
+        raise ValueError("Could not stage a regular IPA for publication") from None
+
+
+def scan_public_ipa(path):
+    from release_privacy import assert_public_artifact, load_public_policy, verify_artifact_hash
+    try:
+        report = assert_public_artifact(path, allow_home_users=["runner"],
+                                        **load_public_policy(PRIVACY_POLICY))
+        verify_artifact_hash(path, report)
+        return report
+    except Exception:
+        # Fail closed even if the scanner itself crashes with sensitive bytes
+        # or filenames in its exception; do not publish those diagnostics.
+        raise ValueError("Release privacy gate refused the IPA or could not complete") from None
+
+
+def verify_uploaded_assets(tag, expected):
+    """Require GitHub's uploaded bytes to match the admitted local files."""
+    try:
+        release = api(f"releases/tags/{tag}")
+        assets = release["assets"]
+        if not release["draft"] or len(assets) != len(expected):
+            raise ValueError
+        for name, (size, digest) in expected.items():
+            matches = [asset for asset in assets if asset["name"] == name]
+            if (len(matches) != 1 or matches[0].get("state") != "uploaded"
+                    or matches[0].get("size") != size
+                    or matches[0].get("digest") != f"sha256:{digest}"):
+                raise ValueError
+    except Exception:
+        raise ValueError("Uploaded release assets do not match the verified bytes; draft remains unpublished") from None
 
 
 def identity(sha):
@@ -41,7 +120,7 @@ def application_changes(released, candidate):
         return ["initial release"]
     paths = run("git", "diff", "--name-only", "--no-renames", "-z", released, candidate, "--").stdout.split("\0")
     return [path for path in paths if path
-            and not path.startswith(MAINTENANCE_DIRECTORIES)
+            and (path in PUBLIC_ARTIFACT_INPUTS or not path.startswith(MAINTENANCE_DIRECTORIES))
             and path not in MAINTENANCE_FILES
             and not ("/" not in path and path.startswith("README") and path.endswith(".md"))]
 
@@ -165,10 +244,41 @@ def publish(base, upstream, btr_upstream):
     source = info["source_sha"]
     validate_candidate(base, upstream, btr_upstream, source)
     version, build, tag = identity(source)
-    ipa = next(Path("dist").glob("*.ipa"))
-    from verify_btr_ipa import verify
-    if verify(ipa, version, build, source, upstream, btr_upstream) != info:
-        raise ValueError("Downloaded artifact no longer matches verified IPA metadata")
+    candidates = list(Path("dist").glob("*.ipa"))
+    if len(candidates) != 1:
+        raise ValueError("Publication requires exactly one IPA")
+    # Scan and upload this same private snapshot, never a mutable dist path.
+    with tempfile.TemporaryDirectory(prefix="piliplus-release-") as temporary:
+        directory = Path(temporary)
+        ipa = directory / candidates[0].name
+        stage_ipa(candidates[0], ipa)
+        try:
+            from verify_btr_ipa import verify
+            actual = verify(ipa, version, build, source, upstream, btr_upstream)
+        except Exception:
+            raise ValueError("Downloaded artifact no longer matches verified IPA metadata") from None
+        if actual != info:
+            raise ValueError("Downloaded artifact no longer matches verified IPA metadata")
+        verify_publishing_identity()
+        report = scan_public_ipa(ipa)
+        if report["sha256"] != info["sha256"] or report["size_bytes"] != info["size_bytes"]:
+            raise ValueError("IPA changed after metadata verification")
+        metadata = directory / "build-info.json"
+        metadata.write_text(json.dumps(info, indent=2) + "\n")
+        metadata.chmod(0o400)
+        expected = {
+            ipa.name: (report["size_bytes"], report["sha256"]),
+            metadata.name: (metadata.stat().st_size, hashlib.sha256(metadata.read_bytes()).hexdigest()),
+        }
+        _publish_staged(info, version, build, tag, ipa, metadata, report, expected,
+                        upstream, btr_upstream)
+
+
+def _publish_staged(info, version, build, tag, ipa, metadata, report, expected,
+                    upstream, btr_upstream):
+    from release_privacy import verify_artifact_hash
+    source = info["source_sha"]
+    verify_artifact_hash(ipa, report)
     if not application_changes(released_source(), source):
         # Keep the existing workflow and all validation gates. A docs-only
         # upstream merge advances history without publishing another package.
@@ -186,14 +296,21 @@ def publish(base, upstream, btr_upstream):
     if existing and not existing["draft"]:
         raise ValueError("Release already published; refusing to replace its assets")
     body = f"PiliPlus BTR {info['version']}, build {build}\nBased on PiliPlus {version}\n\nSource: {source}\nOfficial PiliPlus upstream: {upstream}\nBTR author upstream: {btr_upstream}\nMinimum iOS: {info['min_os_version']}\nIPA SHA-256: {info['sha256']}\n\nBoth source histories are included. BTR tests, static analysis and unsigned iOS build passed. Sideloading is required. The numeric iOS version includes the personal build number so SideStore can offer this package as a source update."
-    Path("dist/release-notes.md").write_text(body)
+    notes = ipa.parent / "release-notes.md"
+    notes.write_text(body)
+    notes.chmod(0o400)
+    verify_artifact_hash(ipa, report)
+    if (metadata.stat().st_size, hashlib.sha256(metadata.read_bytes()).hexdigest()) != expected[metadata.name]:
+        raise ValueError("Release metadata changed before upload")
     if not existing:
-        run("gh", "release", "create", tag, str(ipa), "dist/build-info.json", "--repo", REPO, "--draft", "--target", source, "--title", f"PiliPlus BTR {tag}", "--notes-file", "dist/release-notes.md")
+        run("gh", "release", "create", tag, str(ipa), str(metadata), "--repo", REPO, "--draft", "--target", source, "--title", f"PiliPlus BTR {tag}", "--notes-file", str(notes))
     else:
-        run("gh", "release", "upload", tag, str(ipa), "dist/build-info.json", "--repo", REPO, "--clobber")
+        run("gh", "release", "upload", tag, str(ipa), str(metadata), "--repo", REPO, "--clobber")
+    verify_artifact_hash(ipa, report)
+    verify_uploaded_assets(tag, expected)
     # This non-force push also detects changes made after the earlier check.
     run("git", "push", "origin", f"{source}:refs/heads/btr")
-    run("gh", "release", "edit", tag, "--repo", REPO, "--draft=false", "--latest")
+    run("gh", "release", "edit", tag, "--repo", REPO, "--notes-file", str(notes), "--draft=false", "--latest")
     close_resolved_failures(source)
     run("git", "push", "origin", "--delete", stage, check=False)
     print(f"Published https://github.com/{REPO}/releases/tag/{tag}")
