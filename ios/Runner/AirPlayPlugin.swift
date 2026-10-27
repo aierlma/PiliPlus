@@ -1,6 +1,7 @@
 import AVKit
 import CoreMedia
 import Flutter
+import MediaPlayer
 import UIKit
 
 /// AVKit owns the AirPlay picker, receiver connection and video playback.
@@ -31,6 +32,11 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   private var positionLoaded = false
   private var enableSubtitles = false
   private var externalSubtitlesApplied = false
+  private var diagnostics: [String] = []
+
+  private func trace(_ message: String) {
+    if diagnostics.count < 32 { diagnostics.append(message) }
+  }
   private var audioConfiguration: (
     AVAudioSession.Category, AVAudioSession.Mode,
     AVAudioSession.RouteSharingPolicy, AVAudioSession.CategoryOptions
@@ -102,6 +108,8 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     }
 
     enableSubtitles = args["subtitles"] as? Bool == true
+    diagnostics = []
+    trace("present subtitles=\(enableSubtitles) position=\(args["positionMs"] ?? 0)")
     externalSubtitlesApplied = false
     let item = AVPlayerItem(url: url)
     if enableSubtitles {
@@ -146,12 +154,14 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     externalPlaybackObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) {
       [weak self] player, _ in
       DispatchQueue.main.async {
+        self?.trace("external=\(player.isExternalPlaybackActive) time=\(CMTimeGetSeconds(player.currentTime()))")
         self?.selectExternalDanmakuWhenPlaying(item, player: player)
       }
     }
     timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) {
       [weak self] player, _ in
       DispatchQueue.main.async {
+        self?.trace("control=\(player.timeControlStatus.rawValue) rate=\(player.rate) time=\(CMTimeGetSeconds(player.currentTime()))")
         self?.selectExternalDanmakuWhenPlaying(item, player: player)
       }
     }
@@ -242,6 +252,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       [weak self] item, _ in
       DispatchQueue.main.async {
         guard let self, self.controller?.player === player else { return }
+        self.trace("status=\(item.status.rawValue) time=\(CMTimeGetSeconds(player.currentTime()))")
         switch item.status {
         case .readyToPlay:
           guard !self.started else { return }
@@ -257,6 +268,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
           player.seek(to: CMTime(seconds: position, preferredTimescale: 1000)) {
             [weak self] finished in
             DispatchQueue.main.async {
+              self?.trace("initialSeek finished=\(finished) time=\(CMTimeGetSeconds(player.currentTime()))")
               guard finished, let self, self.controller?.player === player else { return }
               self.positionLoaded = true
               player.play()
@@ -273,7 +285,15 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
 
   private func selectDanmaku(_ item: AVPlayerItem, player: AVPlayer) {
     Task { @MainActor [weak self] in
-      guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+      let group: AVMediaSelectionGroup?
+      do {
+        group = try await item.asset.loadMediaSelectionGroup(for: .legible)
+      } catch {
+        self?.trace("legible load failed code=\((error as NSError).code)")
+        return
+      }
+      self?.trace("legible options=\(group?.options.count ?? -1)")
+      guard let group,
         let option = group.options.first(where: {
           $0.extendedLanguageTag?.hasPrefix("zh") == true
         }) ?? group.options.first,
@@ -284,6 +304,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       // this player; it does not change the system accessibility preferences.
       player.isClosedCaptionDisplayEnabled = true
       item.select(option, in: group)
+      self?.trace("legible selected=\(item.currentMediaSelection.selectedMediaOption(in: group) != nil)")
     }
   }
 
@@ -319,6 +340,8 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     routePicker = nil
     let player = controller?.player
     let seconds = player.map { CMTimeGetSeconds($0.currentTime()) } ?? .nan
+    let nowPlayingTime = MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime]
+    trace("finish loaded=\(positionLoaded) started=\(started) time=\(seconds) nowPlaying=\(nowPlayingTime ?? "nil") external=\(player?.isExternalPlaybackActive ?? false)")
     let positionMs = positionLoaded && seconds.isFinite && seconds >= 0
       ? Int(seconds * 1000) : initialPositionMs
     player?.pause()
@@ -328,6 +351,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     presenter = nil
     restoreAudioSession()
     var response: [String: Any] = ["positionMs": positionMs]
+    response["diagnostics"] = diagnostics
     if let failure { response["error"] = failure }
     completion(response)
   }

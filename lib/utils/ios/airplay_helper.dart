@@ -1,5 +1,6 @@
 import 'package:PiliPlus/services/airplay_hls.dart'
     show isPrivateAirPlayAddress;
+import 'package:PiliPlus/services/btr_proxy/range_core.dart' show BtrLog;
 import 'package:flutter/services.dart';
 
 /// Hands a complete media URL to AVKit, bypassing mpv and the loopback BTR proxy.
@@ -47,6 +48,11 @@ abstract final class IOSAirPlayHelper {
         },
       );
       final milliseconds = result?['positionMs'] as int?;
+      if (result?['diagnostics'] case final List diagnostics) {
+        for (final entry in diagnostics.whereType<String>()) {
+          BtrLog.log('[AirPlay] $entry');
+        }
+      }
       return (
         position: milliseconds != null && milliseconds >= 0
             ? Duration(milliseconds: milliseconds)
