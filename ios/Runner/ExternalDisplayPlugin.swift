@@ -103,6 +103,7 @@ final class ExternalDisplayPlugin: NSObject, FlutterPlugin {
   private func finish() {
     guard let completion else { return }
     self.completion = nil
+    controls?.stopExternalDisplay()
     outputWindow?.rootViewController = nil
     outputWindow?.isHidden = true
     outputWindow = nil
@@ -149,6 +150,7 @@ private final class ExternalPlaybackControls: UIViewController {
   private let slider = UISlider()
   private let time = UILabel()
   private var duration = 0.0
+  private var displayRegistration: AnyObject?
 
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
 
@@ -206,6 +208,22 @@ private final class ExternalPlaybackControls: UIViewController {
     width.isActive = true
     connected = false
     update([:])
+    if #available(iOS 27.0, *) {
+      let configuration = UISceneConfiguration(
+        name: "PiliPlus TV", sessionRole: .windowExternalDisplayNonInteractive)
+      configuration.delegateClass = ExternalDisplaySceneDelegate.self
+      configuration.storyboard = nil
+      displayRegistration = registerSceneAccessory(
+        .externalNonInteractive(sceneConfiguration: configuration))
+    }
+  }
+
+  func stopExternalDisplay() {
+    if #available(iOS 27.0, *),
+       let registration = displayRegistration as? UISceneAccessoryRegistration {
+      unregisterSceneAccessory(registration)
+      displayRegistration = nil
+    }
   }
 
   private func button(_ title: String, action: Selector) -> UIButton {
