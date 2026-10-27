@@ -56,8 +56,8 @@ class AirPlayDanmakuStyle {
 typedef _Cue = ({int start, int end, String settings, String text});
 typedef _Moving = ({int time, double width, double velocity});
 
-const _captionStepMs = 100;
-const _maxActiveComments = 4;
+const _captionStepMs = 50;
+const _maxActiveComments = 2;
 
 /// Temporary, build-flag-only receiver comparison. Each 20-second phase has a
 /// persistent heading, so disappearing motion can be separated from lost text.
@@ -196,8 +196,9 @@ String airPlayDanmakuCompatibleVtt(
 }
 
 /// WebVTT has no motion or clipping command. Update all moving cues on one
-/// bounded 10 Hz clock and remove whole graphemes beyond either edge. Independent
+/// bounded 20 Hz clock and remove whole graphemes beyond either edge. Independent
 /// per-comment clocks stall the Apple TV caption renderer even at low density.
+/// Limit concurrent comments to two to keep this smoother clock sustainable.
 /// Receivers still control glyph rendering, so clipping is by whole grapheme.
 String airPlayDanmakuVtt(
   List<AirPlayComment> comments,

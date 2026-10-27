@@ -1,6 +1,7 @@
 import AVKit
 import CoreMedia
 import Flutter
+import MediaAccessibility
 import MediaPlayer
 import UIKit
 
@@ -111,6 +112,11 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate, A
     enableSubtitles = args["subtitles"] as? Bool == true
     diagnostics = []
     trace("present subtitles=\(enableSubtitles) position=\(args["positionMs"] ?? 0)")
+    if enableSubtitles {
+      var behavior = MACaptionAppearanceBehavior.useContentIfAvailable
+      let windowOpacity = MACaptionAppearanceGetWindowOpacity(.user, &behavior)
+      trace("caption windowOpacity=\(windowOpacity) behavior=\(behavior.rawValue)")
+    }
     externalSubtitlesApplied = false
     let item = AVPlayerItem(url: url)
     if enableSubtitles, let preferences = args["subtitleStyle"] as? [String: Any] {

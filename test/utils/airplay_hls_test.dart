@@ -166,7 +166,7 @@ void main() {
       text,
       startsWith('WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0'),
     );
-    expect(text, contains('00:06:00.000 --> 00:06:00.100'));
+    expect(text, contains('00:06:00.000 --> 00:06:00.050'));
     expect(text, isNot(contains('00:05:59.')));
     expect(text, contains('&lt;hello&gt; &amp; world'));
     expect(text, contains('00:06:01.000 --> 00:06:05.000'));
@@ -273,7 +273,7 @@ void main() {
     expect(atThirty(render(1, 30000)), full);
     final short = render(1, 30000);
     expect(short, isNot(contains('00:00:29.')));
-    expect(short, isNot(contains('00:01:00.100')));
+    expect(short, isNot(contains('00:01:00.050')));
   });
 
   test('irregular comment times share a bounded receiver update clock', () {
@@ -285,8 +285,8 @@ void main() {
     final intervals = cueIntervals(text);
     expect(intervals.length, greaterThan(50));
     for (final cue in intervals) {
-      expect(cue.start % 100, 0);
-      expect(cue.end - cue.start, inInclusiveRange(1, 100));
+      expect(cue.start % 50, 0);
+      expect(cue.end - cue.start, inInclusiveRange(1, 50));
       // No moving cue is duplicated across the native two-second boundary.
       expect(cue.start < 2000 && cue.end > 2000, isFalse);
     }
@@ -325,7 +325,7 @@ void main() {
         if (active > maximum) maximum = active;
       }
       expect(active, 0);
-      expect(maximum, inInclusiveRange(2, 4));
+      expect(maximum, 2);
     },
   );
 }
