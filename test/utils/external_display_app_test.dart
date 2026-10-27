@@ -1,5 +1,6 @@
 import 'package:PiliPlus/utils/ios/external_display_app.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
+import 'package:canvas_danmaku/utils/utils.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -52,6 +53,33 @@ void main() {
     expect(option.massiveMode && option.scrollFixedVelocity, isTrue);
     expect(option.safeArea, isTrue);
   });
+
+  testWidgets(
+    'TV text cache retains physical resolution after logical canvas scaling',
+    (tester) async {
+      tester.view.physicalSize = const Size(1920, 1080);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      messenger.setMockMethodCallHandler(channel, (_) async => null);
+      await tester.pumpWidget(
+        const Center(
+          child: SizedBox(width: 640, height: 360, child: ExternalDisplayApp()),
+        ),
+      );
+      await tester.pump();
+      final item = DanmakuItem<void>(
+        content: DanmakuContentItem<void>('清晰弹幕'),
+        width: 0,
+        height: 0,
+      )..drawParagraphIfNeeded(15, 4, 1.5);
+      expect(DmUtils.devicePixelRatio, 3);
+      expect(item.image!.width, (item.width * 3).ceil());
+      expect(item.image!.height, (item.height * 3).ceil());
+      item.dispose();
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets(
     'subtitle and danmaku changes keep the same shared video surface',

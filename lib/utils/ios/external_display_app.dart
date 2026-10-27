@@ -105,8 +105,16 @@ class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
           final fit =
               BoxFit.values[fitIndex.clamp(0, BoxFit.values.length - 1)];
           final size = constraints.biggest;
+          // The canvas uses phone-sized logical coordinates on a full-resolution
+          // TV surface. Danmaku caches text as bitmaps using MediaQuery's ratio;
+          // keep that ratio consistent with the scaled render target.
+          final physicalHeight = View.of(context).physicalSize.height;
+          final pixelRatio = physicalHeight > 0 && size.height > 0
+              ? physicalHeight / size.height
+              : MediaQuery.devicePixelRatioOf(context);
           return MediaQuery(
-            data: MediaQuery.of(context).copyWith(size: size),
+            data: MediaQuery.of(context)
+                .copyWith(size: size, devicePixelRatio: pixelRatio),
             child: Stack(
               fit: StackFit.expand,
               children: [
