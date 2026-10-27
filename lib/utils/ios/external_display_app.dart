@@ -93,7 +93,7 @@ class _ExternalDisplayAppState extends State<ExternalDisplayApp> {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: ThemeData.dark(),
-    home: ColoredBox(
+    home: Material(
       color: Colors.black,
       child: LayoutBuilder(
         builder: (context, constraints) {

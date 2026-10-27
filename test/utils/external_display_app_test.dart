@@ -117,6 +117,19 @@ void main() {
       final video = tester.element(find.byType(Texture));
       expect(tester.widget<Texture>(find.byType(Texture)).textureId, 41);
       expect(find.text('独立字幕仍然可见'), findsOneWidget);
+      final subtitleText = tester.widget<RichText>(
+        find.descendant(
+          of: find.text('独立字幕仍然可见'),
+          matching: find.byType(RichText),
+        ),
+      );
+      expect(
+        subtitleText.text.style?.decoration?.contains(
+              TextDecoration.underline,
+            ) ??
+            false,
+        isFalse,
+      );
       expect(find.byType(DanmakuScreen<void>), findsOneWidget);
 
       await send('danmaku', [
