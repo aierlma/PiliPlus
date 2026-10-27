@@ -66,6 +66,7 @@ import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/ios/airplay_helper.dart';
 import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
+import 'package:PiliPlus/utils/ios/external_display_helper.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -1632,8 +1633,8 @@ class VideoDetailController extends GetxController
     if (_casting) return;
     _casting = true;
     try {
-      final airPlay = Platform.isIOS
-          ? await showModalBottomSheet<bool>(
+      final mode = Platform.isIOS
+          ? await showModalBottomSheet<String>(
               context: Get.context!,
               useRootNavigator: true,
               builder: (context) => SafeArea(
@@ -1642,26 +1643,118 @@ class VideoDetailController extends GetxController
                   children: [
                     ListTile(
                       leading: const Icon(Icons.airplay),
-                      title: const Text('AirPlay'),
-                      subtitle: const Text('Apple TV / 支持 AirPlay 的电视'),
-                      onTap: () => Navigator.pop(context, true),
+                      title: const Text('AirPlay 视频直投'),
+                      subtitle: const Text('由电视播放视频；弹幕使用字幕轨'),
+                      onTap: () => Navigator.pop(context, 'airplay'),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.connected_tv),
+                      title: const Text('AirPlay 全屏弹幕'),
+                      subtitle: const Text('通过屏幕镜像连接，保留字幕和完整弹幕'),
+                      onTap: () => Navigator.pop(context, 'external'),
                     ),
                     ListTile(
                       leading: const Icon(Icons.cast),
                       title: const Text('DLNA 投屏'),
-                      onTap: () => Navigator.pop(context, false),
+                      onTap: () => Navigator.pop(context, 'dlna'),
                     ),
                   ],
                 ),
               ),
             )
-          : false;
-      if (airPlay != null && !isClosed) await _castVideo(airPlay);
+          : 'dlna';
+      if (mode != null && !isClosed) {
+        if (mode == 'external') {
+          await _castExternalDisplay();
+        } else {
+          await _castVideo(mode == 'airplay');
+        }
+      }
     } catch (error) {
       BtrLog.log('[AirPlay] start failed: ${BtrLog.redact(error)}');
       SmartDialog.showToast('投屏启动失败，请稍后重试');
     } finally {
       _casting = false;
+    }
+  }
+
+  Future<void> _castExternalDisplay() async {
+    final castCid = cid.value;
+    final currentPlayer = player;
+    final wasFullScreen = plPlayerController.isFullScreen.value;
+    String title = 'PiliPlus BTR';
+    try {
+      title = isUgc
+          ? ugcIntroCtr.videoDetail.value.title ?? title
+          : Get.find<PgcIntroController>(tag: heroTag)
+                    .videoDetail
+                    .value
+                    .title ??
+                title;
+    } catch (_) {}
+    await plPlayerController.pause();
+    await plPlayerController.triggerFullScreen(status: true);
+    plPlayerController.showControls.value = false;
+    try {
+      await IOSExternalDisplayHelper.present(
+        title: title,
+        state: () {
+          final subtitle = vttSubtitlesIndex.value;
+          return {
+            'playing': plPlayerController.playerStatus.isPlaying,
+            'positionMs': plPlayerController.positionInMilliseconds,
+            'durationMs': plPlayerController.durationInMilliseconds,
+            'danmaku': plPlayerController.enableShowDanmaku.value,
+            'subtitle': subtitle > 0 && subtitle <= subtitles.length
+                ? subtitles[subtitle - 1].lanDoc ?? subtitles[subtitle - 1].lan
+                : '关闭',
+          };
+        },
+        onCommand: (command, value) async {
+          if (isClosed || cid.value != castCid || player != currentPlayer) {
+            return;
+          }
+          switch (command) {
+            case 'connected':
+              await plPlayerController.play();
+            case 'togglePlayback':
+              if (plPlayerController.playerStatus.isPlaying) {
+                await plPlayerController.pause();
+              } else {
+                await plPlayerController.play();
+              }
+            case 'skip' || 'seek':
+              final milliseconds = command == 'skip'
+                  ? plPlayerController.positionInMilliseconds + (value ?? 0)
+                  : value ?? 0;
+              await plPlayerController.seekTo(
+                Duration(
+                  milliseconds: milliseconds
+                      .clamp(0, plPlayerController.durationInMilliseconds)
+                      .round(),
+                ),
+                isSeek: false,
+              );
+            case 'toggleDanmaku':
+              plPlayerController.enableShowDanmaku.toggle();
+            case 'nextSubtitle':
+              if (subtitles.isNotEmpty) {
+                await setSubtitle(
+                  (vttSubtitlesIndex.value.clamp(0, subtitles.length) + 1) %
+                      (subtitles.length + 1),
+                );
+              }
+          }
+          plPlayerController.showControls.value = false;
+        },
+      );
+    } finally {
+      if (!isClosed && cid.value == castCid && player == currentPlayer) {
+        await plPlayerController.pause();
+        if (!wasFullScreen) {
+          await plPlayerController.triggerFullScreen(status: false);
+        }
+      }
     }
   }
 

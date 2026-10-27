@@ -318,7 +318,9 @@ class MyApp extends StatelessWidget {
   }
 
   static Widget _builder(BuildContext context, Widget? child) {
-    final uiScale = Pref.uiScale;
+    final uiScale = ScaledWidgetsFlutterBinding.instance.scaleForView(
+      View.of(context),
+    );
     final mediaQuery = MediaQuery.of(context);
     final textScaler = TextScaler.linear(Pref.defaultTextScale);
     if (uiScale != 1.0) {
