@@ -64,6 +64,7 @@ import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/size_ext.dart';
+import 'package:PiliPlus/utils/image_utils.dart';
 import 'package:PiliPlus/utils/ios/airplay_helper.dart';
 import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:PiliPlus/utils/ios/external_display_helper.dart';
@@ -1666,7 +1667,7 @@ class VideoDetailController extends GetxController
     try {
       return await IOSExternalDisplayHelper.present(
         title: title,
-        artwork: cover.value,
+        artwork: ImageUtils.safeThumbnailUrl(cover.value),
         darkMode: Theme.of(Get.context!).brightness == Brightness.dark,
         state: () {
           final subtitle = vttSubtitlesIndex.value;
