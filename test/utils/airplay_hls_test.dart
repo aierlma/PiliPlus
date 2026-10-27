@@ -94,15 +94,15 @@ void main() {
       const AirPlayComment(359000, 1, '<hello> & world'),
       const AirPlayComment(361000, 5, 'top comment'),
       const AirPlayComment(361000, 7, 'advanced comment is unsupported'),
-    ], 1);
+    ], 1).replaceAll('\u2060', '');
     expect(
       text,
       startsWith('WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0'),
     );
-    expect(text, contains('00:06:00.000 --> 00:06:00.050'));
+    expect(text, contains('00:06:00.000 --> 00:06:00.017'));
     expect(text, isNot(contains('00:05:59.')));
     expect(text, contains('&lt;hello&gt; &amp; world'));
-    expect(text, contains('00:06:01.000 --> 00:06:06.000'));
+    expect(text, contains('00:06:01.000 --> 00:06:05.000'));
     expect(text, isNot(contains('advanced comment is unsupported')));
     final positions = RegExp(r'position:(\d+\.\d+)')
         .allMatches(text)
@@ -111,4 +111,79 @@ void main() {
     expect(positions.length, greaterThan(1));
     expect(positions.first, greaterThan(positions.last));
   });
+
+  test(
+    'scrolling captions enter and leave near the edges without full-row jumps',
+    () {
+      final text = airPlayDanmakuVtt(
+        [const AirPlayComment(0, 1, '甲乙丙丁戊己庚辛', 0xff0000)],
+        0,
+        measureWidth: (s) => s.length * 3.0,
+      );
+      final blocks = text
+          .split('\n\n')
+          .where((b) => b.contains(' --> '))
+          .toList();
+      expect(blocks.length, greaterThan(300));
+      final positions = blocks
+          .map(
+            (b) => double.parse(
+              RegExp(r'position:([0-9.]+)').firstMatch(b)!.group(1)!,
+            ),
+          )
+          .toList();
+      expect(positions.first, greaterThan(95));
+      expect(positions.last, lessThan(5));
+      expect(blocks.first, contains('>甲</c>'));
+      expect(blocks.last, contains('>辛</c>'));
+      expect(text, contains('rgba(255, 0, 0, 1.000)'));
+      expect(
+        text,
+        isNot(contains('甲乙丙丁戊己庚辛')),
+      ); // joined against native wrapping
+    },
+  );
+
+  test('caption styling and type switches follow the player preferences', () {
+    final text = airPlayDanmakuVtt(
+      [
+        const AirPlayComment(1000, 1, 'scroll'),
+        const AirPlayComment(1000, 4, 'bottom'),
+        const AirPlayComment(1000, 5, 'top', 0xff0000),
+      ],
+      0,
+      style: const AirPlayDanmakuStyle(
+        hideScroll: true,
+        hideBottom: true,
+        whiteOnly: true,
+        staticDuration: 2,
+        opacity: 0.4,
+        fontSize: 6,
+        fontWeight: 6,
+        strokeWidth: 0,
+      ),
+    );
+    expect(text, isNot(contains('>scroll<')));
+    expect(text, isNot(contains('>bottom<')));
+    expect(text, contains('>top</c>'));
+    expect(text, contains('00:00:01.000 --> 00:00:03.000'));
+    expect(text, contains('font-size: 6.000vh'));
+    expect(text, contains('font-weight: 700'));
+    expect(text, contains('text-shadow: none'));
+    expect(text, contains('rgba(255, 255, 255, 0.400)'));
+  });
+
+  test(
+    'fixed velocity allows longer comments more time to leave the screen',
+    () {
+      String render(bool fixed) => airPlayDanmakuVtt(
+        [const AirPlayComment(0, 1, 'abcdefghij')],
+        0,
+        style: AirPlayDanmakuStyle(duration: 2, fixedVelocity: fixed),
+        measureWidth: (s) => s.length * 4.0,
+      );
+      expect(render(false), isNot(contains('00:00:02.')));
+      expect(render(true), contains('00:00:02.'));
+    },
+  );
 }

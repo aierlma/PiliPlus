@@ -10,6 +10,8 @@ import 'package:PiliPlus/common/widgets/scaffold/mini_scaffold.dart';
 import 'package:PiliPlus/grpc/bilibili/app/listener/v1.pbenum.dart'
     show PlaylistSource;
 import 'package:PiliPlus/grpc/dm.dart';
+import 'package:PiliPlus/grpc/bilibili/community/service/dm/v1.pb.dart'
+    show DanmakuElem;
 import 'package:PiliPlus/http/browser_ua.dart';
 import 'package:PiliPlus/http/fav.dart';
 import 'package:PiliPlus/http/init.dart';
@@ -50,6 +52,7 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/plugin/pl_player/utils/danmaku_options.dart';
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/services/btr_proxy/proxy_server.dart';
 import 'package:PiliPlus/services/airplay_hls.dart';
@@ -76,6 +79,7 @@ import 'package:dio/dio.dart' show Options;
 import 'package:extended_nested_scroll_view/extended_nested_scroll_view.dart'
     show ExtendedNestedScrollViewState;
 import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/painting.dart' as painting;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:get/get.dart';
@@ -1768,6 +1772,51 @@ class VideoDetailController extends GetxController
       milliseconds: plPlayerController.positionInMilliseconds,
     );
     final withDanmaku = plPlayerController.enableShowDanmaku.value;
+    final referenceHeight = min(Get.width, Get.height).clamp(200.0, 1500.0);
+    final fontSize = 15 * DanmakuOptions.danmakuFontScaleFS;
+    final fontFamily = Get.context == null
+        ? null
+        : DefaultTextStyle.of(Get.context!).style.fontFamily;
+    final danmakuStyle = AirPlayDanmakuStyle(
+      duration: DanmakuOptions.danmakuDuration,
+      staticDuration: DanmakuOptions.danmakuStaticDuration,
+      area: DanmakuOptions.danmakuShowArea,
+      fontSize: fontSize / referenceHeight * 100,
+      fontWeight: DanmakuOptions.danmakuFontWeight,
+      opacity: plPlayerController.danmakuOpacity.value,
+      strokeWidth: DanmakuOptions.danmakuStrokeWidth,
+      lineHeight: DanmakuOptions.danmakuLineHeight,
+      aspectRatio: video.width! / video.height!,
+      hideScroll: DanmakuOptions.blockTypes.contains(2),
+      hideTop: DanmakuOptions.blockTypes.contains(5),
+      hideBottom: DanmakuOptions.blockTypes.contains(4),
+      whiteOnly: DanmakuOptions.blockColorful,
+      fixedVelocity: DanmakuOptions.danmakuFixedV,
+      static2Scroll: DanmakuOptions.danmakuStatic2Scroll,
+      massiveMode: DanmakuOptions.danmakuMassiveMode,
+      fontFamily: fontFamily,
+    );
+    final minimumWeight = DanmakuOptions.danmakuWeight;
+    final mergeDanmaku = plPlayerController.mergeDanmaku;
+    double measureWidth(String text) {
+      final painter = painting.TextPainter(
+        text: painting.TextSpan(
+          text: text,
+          style: painting.TextStyle(
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: FontWeight.values[danmakuStyle.fontWeight.clamp(0, 8)],
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout();
+      final width =
+          painter.width / (referenceHeight * danmakuStyle.aspectRatio) * 100;
+      painter.dispose();
+      return width;
+    }
+
     final AirPlayHlsSession session;
     SmartDialog.showLoading();
     try {
@@ -1795,19 +1844,52 @@ class VideoDetailController extends GetxController
                     segmentIndex: index + 1,
                   );
                   if (res case Success(:final response)) {
+                    final entries = <({DanmakuElem item, int count})>[];
+                    final merged = <String, int>{};
                     for (final item in response.elems) {
-                      if (plPlayerController.filters.count != 0 &&
-                          plPlayerController.filters.remove(item))
+                      final self = item.midHash == plPlayerController.midHash;
+                      if (item.weight < minimumWeight ||
+                          (!self &&
+                              plPlayerController.filters.count != 0 &&
+                              plPlayerController.filters.remove(item)))
                         continue;
+                      if (mergeDanmaku && !self) {
+                        final previous = merged[item.content];
+                        if (previous != null) {
+                          final entry = entries[previous];
+                          entries[previous] = (
+                            item: entry.item,
+                            count: entry.count + 1,
+                          );
+                          continue;
+                        }
+                        merged[item.content] = entries.length;
+                      }
+                      entries.add((item: item, count: 1));
+                    }
+                    for (final entry in entries) {
+                      final item = entry.item;
                       comments.add(
-                        AirPlayComment(item.progress, item.mode, item.content),
+                        AirPlayComment(
+                          item.progress,
+                          item.mode,
+                          entry.count > 1
+                              ? '(${entry.count})${item.content}'
+                              : item.content,
+                          item.color,
+                        ),
                       );
                     }
                   } else {
                     throw StateError('投屏弹幕加载失败');
                   }
                 }
-                return airPlayDanmakuVtt(comments, segment);
+                return airPlayDanmakuVtt(
+                  comments,
+                  segment,
+                  style: danmakuStyle,
+                  measureWidth: measureWidth,
+                );
               }
             : null,
       );
@@ -1833,6 +1915,7 @@ class VideoDetailController extends GetxController
         position: position,
         localNetwork: true,
         subtitles: withDanmaku,
+        subtitleStyle: withDanmaku ? danmakuStyle.nativeStyle : null,
       );
       if (!isClosed && cid.value == castCid && player == playerAtStart) {
         await plPlayerController.seekTo(result.position, isSeek: true);

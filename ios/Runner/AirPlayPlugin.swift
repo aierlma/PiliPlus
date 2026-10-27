@@ -1,9 +1,10 @@
 import AVKit
+import CoreMedia
 import Flutter
 import UIKit
 
 /// AVKit owns the AirPlay picker, receiver connection and video playback.
-/// The receiver gets the CDN URL, never the phone's loopback BTR URL.
+/// The receiver gets a CDN URL or the session's Wi-Fi HLS URL, never loopback BTR.
 final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -21,12 +22,14 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
   private var completion: FlutterResult?
   private var statusObservation: NSKeyValueObservation?
   private var resolutionObservation: NSKeyValueObservation?
+  private var externalPlaybackObservation: NSKeyValueObservation?
   private var preparationTimer: Timer?
   private var initialPositionMs = 0
   private var failure: String?
   private var started = false
   private var positionLoaded = false
   private var enableSubtitles = false
+  private var externalSubtitlesApplied = false
   private var audioConfiguration: (
     AVAudioSession.Category, AVAudioSession.Mode,
     AVAudioSession.RouteSharingPolicy, AVAudioSession.CategoryOptions
@@ -97,11 +100,35 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
       return
     }
 
+    enableSubtitles = args["subtitles"] as? Bool == true
+    externalSubtitlesApplied = false
     let item = AVPlayerItem(url: url)
+    if enableSubtitles {
+      let preferences = args["subtitleStyle"] as? [String: Any] ?? [:]
+      var attributes: [String: Any] = [
+        kCMTextMarkupAttribute_BackgroundColorARGB as String: [0, 0, 0, 0],
+        kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: [0, 0, 0, 0],
+        kCMTextMarkupAttribute_BaseFontSizePercentageRelativeToVideoHeight as String:
+          min(15, max(1, (preferences["fontSize"] as? NSNumber)?.doubleValue ?? 4.5)),
+        kCMTextMarkupAttribute_BoldStyle as String: preferences["bold"] as? Bool ?? false,
+        kCMTextMarkupAttribute_CharacterEdgeStyle as String:
+          preferences["outline"] as? Bool == false
+            ? kCMTextMarkupCharacterEdgeStyle_None : kCMTextMarkupCharacterEdgeStyle_Uniform,
+      ]
+      if let family = preferences["fontFamily"] as? String, !family.isEmpty {
+        attributes[kCMTextMarkupAttribute_FontFamilyName as String] = family
+      }
+      if let style = AVTextStyleRule(textMarkupAttributes: attributes) {
+        item.textStyleRules = [style]
+      }
+    }
     let title = (args["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "PiliPlus BTR"
     setTitle(title, for: item)
     let player = AVPlayer(playerItem: item)
     player.allowsExternalPlayback = true
+    // The app's enabled danmaku must not inherit the receiver's captions-off
+    // preference. The user can still turn the track off in AVKit controls.
+    if enableSubtitles { player.appliesMediaSelectionCriteriaAutomatically = false }
     let viewController = AirPlayViewController()
     viewController.player = player
     viewController.allowsPictureInPicturePlayback = false
@@ -115,7 +142,17 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     failure = nil
     started = false
     positionLoaded = false
-    enableSubtitles = args["subtitles"] as? Bool == true
+    externalPlaybackObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) {
+      [weak self] player, _ in
+      guard player.isExternalPlaybackActive else { return }
+      DispatchQueue.main.async {
+        guard let self, self.controller?.player === player,
+          self.enableSubtitles, !self.externalSubtitlesApplied
+        else { return }
+        self.externalSubtitlesApplied = true
+        self.selectDanmaku(item, player: player)
+      }
+    }
     resolutionObservation = item.observe(\.presentationSize, options: [.initial, .new]) {
       [weak self] item, _ in
       let size = item.presentationSize
@@ -210,12 +247,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
           self.preparationTimer?.invalidate()
           self.preparationTimer = nil
           if self.enableSubtitles {
-            Task { @MainActor [weak self] in
-              guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
-                let option = group.options.first, self?.controller?.player === player
-              else { return }
-              item.select(option, in: group)
-            }
+            self.selectDanmaku(item, player: player)
           }
           let seconds = CMTimeGetSeconds(item.duration)
           let requested = Double(self.initialPositionMs) / 1000
@@ -237,6 +269,18 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     }
   }
 
+  private func selectDanmaku(_ item: AVPlayerItem, player: AVPlayer) {
+    Task { @MainActor [weak self] in
+      guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+        let option = group.options.first(where: {
+          $0.extendedLanguageTag?.hasPrefix("zh") == true
+        }) ?? group.options.first,
+        self?.controller?.player === player
+      else { return }
+      item.select(option, in: group)
+    }
+  }
+
   private func fail(_ message: String) {
     guard completion != nil else { return }
     failure = message
@@ -254,6 +298,7 @@ final class AirPlayPlugin: NSObject, FlutterPlugin, AVRoutePickerViewDelegate {
     preparationTimer = nil
     statusObservation = nil
     resolutionObservation = nil
+    externalPlaybackObservation = nil
     routePicker?.delegate = nil
     routePicker?.removeFromSuperview()
     routePicker = nil

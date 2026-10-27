@@ -212,7 +212,15 @@ class AirPlayHlsSession {
           response.statusCode = HttpStatus.notFound;
           return;
         }
-        final text = await (_subtitles[segment] ??= loader(segment));
+        final pending = _subtitles[segment] ??= loader(segment);
+        final String text;
+        try {
+          text = await pending;
+        } catch (_) {
+          if (identical(_subtitles[segment], pending))
+            _subtitles.remove(segment);
+          rethrow;
+        }
         // Keep a bounded cache; seeking back can fetch a previous segment again.
         if (_subtitles.length > 4) {
           _subtitles.remove(

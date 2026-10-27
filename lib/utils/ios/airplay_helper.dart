@@ -15,6 +15,7 @@ abstract final class IOSAirPlayHelper {
     required Duration position,
     bool localNetwork = false,
     bool subtitles = false,
+    Map<String, Object>? subtitleStyle,
   }) async {
     if (_isActive) throw StateError('AirPlay is already open');
     // The TV endpoint can return HTTP even when the CDN supports HTTPS.
@@ -41,6 +42,8 @@ abstract final class IOSAirPlayHelper {
           'positionMs': position.inMilliseconds,
           if (local) 'localNetwork': true,
           if (subtitles) 'subtitles': true,
+          if (subtitles && subtitleStyle != null)
+            'subtitleStyle': subtitleStyle,
         },
       );
       final milliseconds = result?['positionMs'] as int?;
