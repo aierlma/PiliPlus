@@ -497,6 +497,8 @@ private final class ExternalPlaybackControls: UIViewController {
   private let playButton = UIButton(type: .system)
   private let danmakuButton = UIButton(type: .system)
   private let subtitleButton = UIButton(type: .system)
+  private let danmakuScaleSlider = UISlider()
+  private let danmakuScaleValue = UILabel()
   private let slider = UISlider()
   private let elapsedTime = UILabel()
   private let remainingTime = UILabel()
@@ -607,9 +609,22 @@ private final class ExternalPlaybackControls: UIViewController {
     let options = UIStackView(arrangedSubviews: [danmakuButton, subtitleButton])
     options.distribution = .fillEqually
     options.spacing = 12
+    let danmakuScaleTitle = label("弹幕字号", style: .subheadline)
+    danmakuScaleSlider.minimumValue = 0.5
+    danmakuScaleSlider.maximumValue = 2.5
+    danmakuScaleSlider.accessibilityLabel = "弹幕字号"
+    danmakuScaleSlider.addTarget(self, action: #selector(changeDanmakuScale), for: .valueChanged)
+    danmakuScaleSlider.addTarget(self, action: #selector(saveDanmakuScale), for: [.touchUpInside, .touchUpOutside])
+    danmakuScaleValue.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+    danmakuScaleValue.textColor = .secondaryLabel
+    danmakuScaleValue.setContentHuggingPriority(.required, for: .horizontal)
+    danmakuScaleTitle.setContentHuggingPriority(.required, for: .horizontal)
+    let danmakuScaleRow = UIStackView(arrangedSubviews: [danmakuScaleTitle, danmakuScaleSlider, danmakuScaleValue])
+    danmakuScaleRow.spacing = 14
+    danmakuScaleRow.alignment = .center
     transport.axis = .vertical
     transport.spacing = 22
-    [timeline, row, options].forEach { transport.addArrangedSubview($0) }
+    [timeline, row, options, danmakuScaleRow].forEach { transport.addArrangedSubview($0) }
 
     let guideSymbol = UIImageView(image: UIImage(systemName: "rectangle.on.rectangle",
       withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .light)))
@@ -760,6 +775,11 @@ private final class ExternalPlaybackControls: UIViewController {
            symbol: danmaku ? "text.bubble.fill" : "text.bubble")
     option(subtitleButton, title: "字幕", subtitle: state["subtitle"] as? String ?? "关闭",
            symbol: "captions.bubble")
+    if !danmakuScaleSlider.isTracking {
+      danmakuScaleSlider.value = min(2.5, max(0.5,
+        (state["danmakuScale"] as? NSNumber)?.floatValue ?? 1.2))
+      updateDanmakuScaleLabel()
+    }
     let subtitles = state["subtitles"] as? [String] ?? ["关闭"]
     let selected = state["subtitleIndex"] as? Int ?? 0
     let signature = "\(selected):\(subtitles)"
@@ -803,6 +823,18 @@ private final class ExternalPlaybackControls: UIViewController {
   }
   @objc private func togglePlayback() { onCommand?("togglePlayback", nil) }
   @objc private func toggleDanmaku() { onCommand?("toggleDanmaku", nil) }
+  private func updateDanmakuScaleLabel() {
+    let text = "\(Int((danmakuScaleSlider.value * 100).rounded()))%"
+    danmakuScaleValue.text = text
+    danmakuScaleSlider.accessibilityValue = text
+  }
+  @objc private func changeDanmakuScale() {
+    updateDanmakuScaleLabel()
+    onCommand?("danmakuScale", Double(danmakuScaleSlider.value))
+  }
+  @objc private func saveDanmakuScale() {
+    onCommand?("saveDanmakuScale", Double(danmakuScaleSlider.value))
+  }
   @objc private func skipBackward() { onCommand?("skip", -15000) }
   @objc private func skipForward() { onCommand?("skip", 15000) }
   @objc private func previewSeek() { updateTimes(Double(slider.value) * duration) }

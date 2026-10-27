@@ -64,6 +64,7 @@ void main() {
     () async {
       final first = present(1);
       await Future<void>.delayed(Duration.zero);
+      expect(calls.last.arguments['state']['referenceHeight'], 400.0);
       expect(IOSExternalDisplayHelper.continuesToNextVideo, isFalse);
       await command('connected');
       expect(await IOSExternalDisplayHelper.prepareNextVideo(), isTrue);
@@ -73,6 +74,7 @@ void main() {
       final second = present(2, showControls: false);
       await Future<void>.delayed(Duration.zero);
       expect(calls.last.arguments['showControls'], isFalse);
+      expect(calls.last.arguments['state']['referenceHeight'], 400.0);
       await command('connected');
       final count = calls.length;
       IOSExternalDisplayHelper.sendDanmaku(1, [

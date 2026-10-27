@@ -1647,6 +1647,18 @@ class VideoDetailController extends GetxController
   }
 
   bool _casting = false;
+  final externalDanmakuScale = DanmakuOptions.danmakuFontScaleFS.obs;
+
+  void setExternalDanmakuScale(double value, {bool save = false}) {
+    final scale = value.clamp(0.5, 2.5).toPrecision(2);
+    DanmakuOptions.danmakuFontScaleFS = scale;
+    externalDanmakuScale.value = scale;
+    IOSExternalDisplayHelper.refresh();
+    if (save) {
+      unawaited(DanmakuOptions.save(plPlayerController.danmakuOpacity.value));
+    }
+  }
+
   Completer<void>? _castFinished;
   bool _resumingExternalDisplay = false;
 
@@ -1780,6 +1792,7 @@ class VideoDetailController extends GetxController
               'lineHeight': DanmakuOptions.danmakuLineHeight,
             },
             'danmakuOpacity': plPlayerController.danmakuOpacity.value,
+            'danmakuScale': DanmakuOptions.danmakuFontScaleFS,
             'playing': plPlayerController.playerStatus.isPlaying,
             'positionMs': plPlayerController.positionInMilliseconds,
             'durationMs': plPlayerController.durationInMilliseconds,
@@ -1837,6 +1850,13 @@ class VideoDetailController extends GetxController
               );
             case 'toggleDanmaku':
               plPlayerController.enableShowDanmaku.toggle();
+            case 'danmakuScale' || 'saveDanmakuScale':
+              if (value != null) {
+                setExternalDanmakuScale(
+                  value,
+                  save: command == 'saveDanmakuScale',
+                );
+              }
             case 'selectSubtitle':
               final index = value?.toInt();
               if (index != null && index >= 0 && index <= subtitles.length) {

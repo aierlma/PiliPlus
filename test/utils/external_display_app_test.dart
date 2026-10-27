@@ -114,6 +114,83 @@ void main() {
   );
 
   testWidgets(
+    'tablet remote replaces the video while retaining its player and comments',
+    (tester) async {
+      tester.view.physicalSize = const Size(1366, 1024);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const playerKey = ValueKey('tablet-player');
+      var toggles = 0;
+      var danmakuToggles = 0;
+      double? scale;
+      double? savedScale;
+      Duration? seek;
+      Widget page(bool connected) => MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              SizedBox(
+                width: 860,
+                height: 484,
+                child: ExternalPlaybackPanel(
+                  connected: connected,
+                  playing: true,
+                  player: const ColoredBox(
+                    key: playerKey,
+                    color: Colors.black,
+                    child: Center(child: Text('平板视频画面')),
+                  ),
+                  position: const Duration(seconds: 60),
+                  duration: const Duration(minutes: 10),
+                  danmaku: true,
+                  danmakuScale: 1.2,
+                  subtitles: const ['关闭', 'English'],
+                  subtitleIndex: 0,
+                  onBack: () {},
+                  onShowControls: () {},
+                  onTogglePlayback: () => toggles++,
+                  onSeek: (value) => seek = value,
+                  onToggleDanmaku: () => danmakuToggles++,
+                  onSubtitle: (_) {},
+                  onDanmakuScale: (value) => scale = value,
+                  onSaveDanmakuScale: (value) => savedScale = value,
+                ),
+              ),
+              const Expanded(child: Text('右侧评论')),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpWidget(page(false));
+      final source = find.byKey(playerKey, skipOffstage: false);
+      final original = tester.element(source);
+      await tester.pumpWidget(page(true));
+      expect(tester.element(source), same(original));
+      expect(tester.getSize(source), const Size(860, 484));
+      expect(find.text('平板视频画面'), findsNothing);
+      expect(find.text('右侧评论'), findsOneWidget);
+      expect(find.text('弹幕字号'), findsOneWidget);
+      await tester.tap(find.byTooltip('暂停'));
+      await tester.tap(find.byTooltip('前进 15 秒'));
+      await tester.tap(find.text('弹幕已开启'));
+      await tester.drag(
+        find.byKey(const ValueKey('external-danmaku-scale')),
+        const Offset(90, 0),
+      );
+      expect(toggles, 1);
+      expect(danmakuToggles, 1);
+      expect(seek, const Duration(seconds: 75));
+      expect(scale, greaterThan(1.2));
+      expect(savedScale, scale);
+      await tester.pumpWidget(page(false));
+      expect(tester.element(source), same(original));
+      expect(find.text('平板视频画面'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'TV text cache retains physical resolution after logical canvas scaling',
     (tester) async {
       tester.view.physicalSize = const Size(1920, 1080);

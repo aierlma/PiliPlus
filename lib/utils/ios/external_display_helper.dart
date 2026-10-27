@@ -1,13 +1,13 @@
 import 'dart:async';
-import 'dart:ui' show PlatformDispatcher;
 
-import 'package:PiliPlus/common/widgets/scale_app.dart';
 import 'package:PiliPlus/services/btr_proxy/range_core.dart' show BtrLog;
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart' show WidgetsBinding;
 
 /// Connects the phone player to a separate TV renderer, keeping comments usable.
 abstract final class IOSExternalDisplayHelper {
+  // TV typography follows the TV image height, independently of the sending
+  // device's screen size, orientation, split view or app UI scale.
+  static const canvasHeight = 400.0;
   static const _channel = MethodChannel(
     'com.example.piliplus/external-display',
   );
@@ -72,14 +72,6 @@ abstract final class IOSExternalDisplayHelper {
     required Future<void> Function(String command, double? value) onCommand,
   }) async {
     if (_active) throw StateError('External display is already open');
-    final binding = WidgetsBinding.instance;
-    final view = PlatformDispatcher.instance.views.first;
-    final referenceHeight =
-        view.physicalSize.shortestSide /
-        view.devicePixelRatio /
-        (binding is ScaledWidgetsFlutterBinding
-            ? binding.scaleForView(view)
-            : 1);
     _active = true;
     final closed = Completer<void>();
     _closed = closed;
@@ -87,7 +79,7 @@ abstract final class IOSExternalDisplayHelper {
     Map<String, Object>? snapshot() {
       final value = state();
       if (value == null) return null;
-      return {...value, 'referenceHeight': referenceHeight};
+      return {...value, 'referenceHeight': canvasHeight};
     }
 
     Future<void> update() async {
