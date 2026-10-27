@@ -126,6 +126,7 @@ class VideoDetailController extends GetxController
   // 请求返回的视频信息
   late PlayUrlModel data;
   final RxBool videoState = false.obs;
+  final RxBool externalDisplayConnected = false.obs;
 
   /// 播放器配置 画质 音质 解码格式
   final Rxn<VideoQuality> currentVideoQa = Rxn<VideoQuality>();
@@ -1757,15 +1758,21 @@ class VideoDetailController extends GetxController
           }
           switch (command) {
             case 'connected':
+              animController?.stop();
+              isExpanding = false;
+              isCollapsing = false;
+              externalDisplayConnected.value = true;
               if (playOnConnect) {
                 await plPlayerController.play();
               }
             case 'disconnected':
+              externalDisplayConnected.value = false;
               playOnConnect = plPlayerController.playerStatus.isPlaying;
               await plPlayerController.pause();
               plPlayerController.danmakuController?.clear();
               IOSExternalDisplayHelper.clearDanmaku();
             case 'close':
+              externalDisplayConnected.value = false;
               await plPlayerController.pause();
               plPlayerController.danmakuController?.clear();
             case 'togglePlayback':
@@ -1799,6 +1806,7 @@ class VideoDetailController extends GetxController
       );
     } finally {
       await subtitleSubscription.cancel();
+      if (!isClosed) externalDisplayConnected.value = false;
       if (!isClosed && cid.value == castCid && player == currentPlayer) {
         await plPlayerController.pause();
       }

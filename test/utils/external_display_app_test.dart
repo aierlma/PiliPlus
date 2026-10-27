@@ -1,3 +1,4 @@
+import 'package:PiliPlus/pages/video/widgets/external_playback_header.dart';
 import 'package:PiliPlus/utils/ios/external_display_app.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:canvas_danmaku/utils/utils.dart';
@@ -53,6 +54,64 @@ void main() {
     expect(option.massiveMode && option.scrollFixedVelocity, isTrue);
     expect(option.safeArea, isTrue);
   });
+
+  testWidgets(
+    'phone controls collapse without replacing or resizing the source player',
+    (tester) async {
+      const playerKey = ValueKey('source-player');
+      var toggles = 0;
+      var controls = 0;
+      Widget page(bool connected) => MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              SizedBox(
+                width: 402,
+                height: connected ? ExternalPlaybackHeader.compactHeight : 226,
+                child: ExternalPlaybackHeader(
+                  connected: connected,
+                  playing: true,
+                  videoSize: const Size(402, 226),
+                  player: const ColoredBox(
+                    key: playerKey,
+                    color: Colors.black,
+                    child: Center(child: Text('手机视频画面')),
+                  ),
+                  overlay: const SizedBox.shrink(),
+                  onBack: () {},
+                  onTogglePlayback: () => toggles++,
+                  onShowControls: () => controls++,
+                ),
+              ),
+              const Expanded(child: Text('评论区')),
+            ],
+          ),
+        ),
+      );
+      final playerFinder = find.byKey(playerKey, skipOffstage: false);
+      await tester.pumpWidget(page(false));
+      final originalPlayer = tester.element(playerFinder);
+      expect(tester.getSize(playerFinder), const Size(402, 226));
+      await tester.pumpWidget(page(true));
+      expect(tester.element(playerFinder), same(originalPlayer));
+      expect(tester.getSize(playerFinder), const Size(402, 226));
+      expect(TickerMode.valuesOf(tester.element(playerFinder)).enabled, isTrue);
+      expect(find.text('手机视频画面'), findsNothing);
+      expect(find.text('评论区'), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(ExternalPlaybackHeader)).height,
+        ExternalPlaybackHeader.compactHeight,
+      );
+      await tester.tap(find.byTooltip('暂停'));
+      await tester.tap(find.byTooltip('投屏选项'));
+      expect(toggles, 1);
+      expect(controls, 1);
+      await tester.pumpWidget(page(false));
+      expect(tester.element(playerFinder), same(originalPlayer));
+      expect(find.text('手机视频画面'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'TV text cache retains physical resolution after logical canvas scaling',
