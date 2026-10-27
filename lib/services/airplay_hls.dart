@@ -24,6 +24,8 @@ class AirPlayTrack {
   final int height;
 }
 
+const airPlaySubtitleSegmentSeconds = 30;
+
 typedef AirPlaySubtitleLoader = Future<String> Function(int segment);
 
 /// Serves one AirPlay session on Wi-Fi. It forwards bytes without decoding or
@@ -69,7 +71,8 @@ class AirPlayHlsSession {
       ]);
       session._subtitleLoader = subtitles;
       final duration = indexes.first.segments.last.endTime;
-      session._subtitleCount = (duration / 360).ceil();
+      session._subtitleCount = (duration / airPlaySubtitleSegmentSeconds)
+          .ceil();
       session._playlists['master.m3u8'] = airPlayMasterPlaylist(
         video: video,
         audio: audio,
@@ -79,13 +82,15 @@ class AirPlayHlsSession {
         final lines = <String>[
           '#EXTM3U',
           '#EXT-X-VERSION:7',
-          '#EXT-X-TARGETDURATION:360',
+          '#EXT-X-TARGETDURATION:$airPlaySubtitleSegmentSeconds',
           '#EXT-X-PLAYLIST-TYPE:VOD',
           '#EXT-X-MEDIA-SEQUENCE:0',
         ];
         for (var i = 0; i < session._subtitleCount; i++) {
           lines
-            ..add('#EXTINF:${min(360, duration - i * 360).toStringAsFixed(3)},')
+            ..add(
+              '#EXTINF:${min(airPlaySubtitleSegmentSeconds, duration - i * airPlaySubtitleSegmentSeconds).toStringAsFixed(3)},',
+            )
             ..add('danmaku-$i.vtt');
         }
         lines.add('#EXT-X-ENDLIST');

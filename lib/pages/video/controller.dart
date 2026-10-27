@@ -1817,6 +1817,28 @@ class VideoDetailController extends GetxController
       return width;
     }
 
+    final dmSegments = <int, Future<List<DanmakuElem>>>{};
+    Future<List<DanmakuElem>> loadComments(int index) async {
+      final pending = dmSegments.putIfAbsent(index, () async {
+        final result = await DmGrpc.dmSegMobile(
+          cid: castCid,
+          segmentIndex: index + 1,
+        );
+        if (result case Success(:final response)) return response.elems;
+        throw StateError('投屏弹幕加载失败');
+      });
+      try {
+        final comments = await pending;
+        if (dmSegments.length > 3) {
+          dmSegments.remove(dmSegments.keys.firstWhere((key) => key != index));
+        }
+        return comments;
+      } catch (_) {
+        if (identical(dmSegments[index], pending)) dmSegments.remove(index);
+        rethrow;
+      }
+    }
+
     final AirPlayHlsSession session;
     SmartDialog.showLoading();
     try {
@@ -1836,52 +1858,46 @@ class VideoDetailController extends GetxController
         subtitles: withDanmaku
             ? (segment) async {
                 final comments = <AirPlayComment>[];
-                // Include the previous segment so comments crossing a seek boundary
-                // keep their original timing rather than restarting.
-                for (final index in [if (segment > 0) segment - 1, segment]) {
-                  final res = await DmGrpc.dmSegMobile(
-                    cid: castCid,
-                    segmentIndex: index + 1,
-                  );
-                  if (res case Success(:final response)) {
-                    final entries = <({DanmakuElem item, int count})>[];
-                    final merged = <String, int>{};
-                    for (final item in response.elems) {
-                      final self = item.midHash == plPlayerController.midHash;
-                      if (item.weight < minimumWeight ||
-                          (!self &&
-                              plPlayerController.filters.count != 0 &&
-                              plPlayerController.filters.remove(item)))
+                // DM API data arrives in six-minute blocks; native subtitle
+                // files use short intervals to bound parsing/memory on receivers.
+                final dmIndex = segment * airPlaySubtitleSegmentSeconds ~/ 360;
+                for (final index in [if (dmIndex > 0) dmIndex - 1, dmIndex]) {
+                  final source = await loadComments(index);
+                  final entries = <({DanmakuElem item, int count})>[];
+                  final merged = <String, int>{};
+                  for (final item in source) {
+                    final self = item.midHash == plPlayerController.midHash;
+                    if (item.weight < minimumWeight ||
+                        (!self &&
+                            plPlayerController.filters.count != 0 &&
+                            plPlayerController.filters.remove(item)))
+                      continue;
+                    if (mergeDanmaku && !self) {
+                      final previous = merged[item.content];
+                      if (previous != null) {
+                        final entry = entries[previous];
+                        entries[previous] = (
+                          item: entry.item,
+                          count: entry.count + 1,
+                        );
                         continue;
-                      if (mergeDanmaku && !self) {
-                        final previous = merged[item.content];
-                        if (previous != null) {
-                          final entry = entries[previous];
-                          entries[previous] = (
-                            item: entry.item,
-                            count: entry.count + 1,
-                          );
-                          continue;
-                        }
-                        merged[item.content] = entries.length;
                       }
-                      entries.add((item: item, count: 1));
+                      merged[item.content] = entries.length;
                     }
-                    for (final entry in entries) {
-                      final item = entry.item;
-                      comments.add(
-                        AirPlayComment(
-                          item.progress,
-                          item.mode,
-                          entry.count > 1
-                              ? '(${entry.count})${item.content}'
-                              : item.content,
-                          item.color,
-                        ),
-                      );
-                    }
-                  } else {
-                    throw StateError('投屏弹幕加载失败');
+                    entries.add((item: item, count: 1));
+                  }
+                  for (final entry in entries) {
+                    final item = entry.item;
+                    comments.add(
+                      AirPlayComment(
+                        item.progress,
+                        item.mode,
+                        entry.count > 1
+                            ? '(${entry.count})${item.content}'
+                            : item.content,
+                        item.color,
+                      ),
+                    );
                   }
                 }
                 return airPlayDanmakuVtt(
@@ -1889,6 +1905,7 @@ class VideoDetailController extends GetxController
                   segment,
                   style: danmakuStyle,
                   measureWidth: measureWidth,
+                  segmentDurationMs: airPlaySubtitleSegmentSeconds * 1000,
                 );
               }
             : null,

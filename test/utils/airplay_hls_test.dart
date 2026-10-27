@@ -186,4 +186,27 @@ void main() {
       expect(render(true), contains('00:00:02.'));
     },
   );
+  test('short subtitle intervals retain the same lanes across boundaries', () {
+    final comments = List.generate(
+      20,
+      (i) => AirPlayComment(i * 2000, 1, '边界弹幕$i'),
+    );
+    String render(int segment, int length) => airPlayDanmakuVtt(
+      comments,
+      segment,
+      segmentDurationMs: length,
+      measureWidth: (s) => s.length * 3.0,
+    );
+    List<String> atThirty(String text) => text
+        .split('\n\n')
+        .where((b) => b.contains('00:00:30.000 -->'))
+        .map((b) => b.split('\n').skip(1).join('\n'))
+        .toList();
+    final full = atThirty(render(0, 360000));
+    expect(full, isNotEmpty);
+    expect(atThirty(render(1, 30000)), full);
+    final short = render(1, 30000);
+    expect(short, isNot(contains('00:00:29.')));
+    expect(short, isNot(contains('00:01:00.017')));
+  });
 }

@@ -64,9 +64,10 @@ String airPlayDanmakuVtt(
   int segment, {
   AirPlayDanmakuStyle style = const AirPlayDanmakuStyle(),
   double Function(String)? measureWidth,
+  int segmentDurationMs = 360000,
 }) {
-  final start = segment * 360000;
-  final end = start + 360000;
+  final start = segment * segmentDurationMs;
+  final end = start + segmentDurationMs;
   final cues = <_Cue>[];
   final fontSize = style.fontSize.clamp(1.0, 15.0);
   final rowHeight = (fontSize * style.lineHeight).clamp(fontSize, 30.0);
@@ -79,6 +80,7 @@ String airPlayDanmakuVtt(
   final sorted = comments.toList()
     ..sort((a, b) => a.timeMs.compareTo(b.timeMs));
   final colors = <int>{};
+  final glyphWidths = <String, double>{};
   var overflowLane = 0;
   double measure(String text) =>
       measureWidth?.call(text) ??
@@ -95,7 +97,7 @@ String airPlayDanmakuVtt(
         comment.text.trim().isEmpty ||
         style.opacity <= 0)
       continue;
-    var mode = comment.mode;
+    final mode = comment.mode;
     if ((mode == 4 && style.hideBottom) ||
         (mode == 5 && style.hideTop) ||
         (mode != 4 && mode != 5 && style.hideScroll))
@@ -134,27 +136,25 @@ String airPlayDanmakuVtt(
         continue;
       }
       if (!style.static2Scroll || style.hideScroll) continue;
-      mode = 1;
     }
 
     final glyphs = plain.characters.toList();
     final offsets = <double>[0];
-    var prefix = '';
     for (final glyph in glyphs) {
-      prefix += glyph;
-      offsets.add(measure(prefix));
+      offsets.add(
+        offsets.last + glyphWidths.putIfAbsent(glyph, () => measure(glyph)),
+      );
     }
     final width = offsets.last;
     if (width <= 0) continue;
     final durationMs = max(1000, (style.duration * 1000).round());
     final velocity = (style.fixedVelocity ? 100 : 100 + width) / durationMs;
     final travelMs = ((100 + width) / velocity).ceil();
-    if (comment.timeMs + travelMs <= start) continue;
     var lane = moving.indexWhere((previous) {
       if (previous == null) return true;
       final x = 100 - previous.velocity * (comment.timeMs - previous.time);
       final right = x + previous.width;
-      if (right > 100) return false;
+      if (right + fontSize / style.aspectRatio > 100) return false;
       // A faster, wider comment must not catch the preceding one before exit.
       return right <= 0 ||
           velocity <= previous.velocity ||
@@ -164,6 +164,7 @@ String airPlayDanmakuVtt(
     if (lane < 0 && style.massiveMode) lane = overflowLane++ % laneCount;
     if (lane < 0) continue;
     moving[lane] = (time: comment.timeMs, width: width, velocity: velocity);
+    if (comment.timeMs + travelMs <= start) continue;
     final frames = (travelMs * 60 / 1000).ceil();
     for (var frame = 0; frame < frames; frame++) {
       final elapsed = (frame * 1000 / 60).round();
@@ -193,12 +194,17 @@ String airPlayDanmakuVtt(
         settings:
             'line:${(3 + lane * rowHeight).toStringAsFixed(2)}%,start '
             'position:${position.toStringAsFixed(3)}%,line-left align:left '
-            'size:${(100 - position).toStringAsFixed(3)}%',
+            'size:${min(100 - position, offsets[last] - offsets[first] + 0.4).toStringAsFixed(3)}%',
         text: markup(visible),
       ));
     }
   }
-  cues.sort((a, b) => a.start.compareTo(b.start));
+  cues.sort((a, b) {
+    final time = a.start.compareTo(b.start);
+    if (time != 0) return time;
+    final settings = a.settings.compareTo(b.settings);
+    return settings != 0 ? settings : a.text.compareTo(b.text);
+  });
   final result = StringBuffer(
     'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\nSTYLE\n',
   );
