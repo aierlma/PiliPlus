@@ -139,7 +139,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     if (videoDetailController.isUgc) {
       return ugcIntroController.videoDetail.value.hasSeasonOrParts;
     }
-    return pgcIntroController.pgcItem.hasEpisodes;
+    return pgcIntroController.pgcItem.hasEpisodesOrSeasons;
   }
 
   final videoReplyPanelKey = GlobalKey();
@@ -1814,7 +1814,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         ugcIntroController: null,
         type: .pgc,
         cover: null,
-        list: [pgcIntroController.pgcItem.episodes!],
+        list: [pgcIntroController.pgcItem.episodes ?? []],
         bvid: videoDetailController.bvid,
         aid: videoDetailController.aid,
         cid: videoDetailController.cid.value,
@@ -1835,6 +1835,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                   pgcController: pgcIntroController,
                   onSeasonChanged: () {
                     if (context.mounted) (context as Element).markNeedsBuild();
+                    final introState = videoIntroKey.currentState;
+                    if (introState != null && introState.mounted) {
+                      introState.setState(() {});
+                    }
                   },
                 );
               },
@@ -1965,14 +1969,14 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     );
   }
 
-  void showEpisodes([
-    int? index,
+  void showEpisodes({
+    int? seasonIndex,
     UgcSeason? season,
     List<ugc.BaseEpisodeItem>? episodes,
     String? bvid,
     int? aid,
     int? cid,
-  ]) {
+  }) {
     assert((cid == null) == (bvid == null));
     final isFullScreen = this.isFullScreen;
     if (cid == null) {
@@ -1991,7 +1995,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
           : EpisodeType.pgc,
       cover: videoDetailController.cover.value,
       enableSlide: enableSlide,
-      initialTabIndex: index ?? 0,
+      initialTabIndex: seasonIndex ?? 0,
       bvid: bvid!,
       aid: aid,
       cid: cid,
