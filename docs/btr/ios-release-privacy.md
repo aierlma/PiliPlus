@@ -21,8 +21,11 @@ rule names and numeric locations, not the matched private values or paths.
 
 ## Package checks
 
-Before packaging, `tool/prepare_public_ios.py` removes native debug symbols
-with `xcrun strip -S`. Frameworks are then signed ad hoc. This does not remove
+Before packaging, `tool/prepare_public_ios.py` signs frameworks ad hoc to
+normalize the link-edit layout of prebuilt libraries, then removes native
+debug symbols with `xcrun strip -S`. It signs frameworks again after stripping
+and verifies every final signature strictly. A failure in any stage stops
+packaging. This does not remove
 source URIs embedded in Dart AOT code, which is why public packages are built
 in GitHub Actions rather than in a personal home directory.
 

@@ -53,11 +53,71 @@ class PreparationTests(unittest.TestCase):
         framework.mkdir(parents=True)
         (framework / "Plugin").write_bytes(b"\xcf\xfa\xed\xfe" + b"code")
         for failed_stage in ("--force", "--verify"):
+            strip_started = False
             def command(args, **kwargs):
-                return subprocess.CompletedProcess(args, int(failed_stage in args))
+                nonlocal strip_started
+                if args[:2] == ["xcrun", "strip"]:
+                    strip_started = True
+                return subprocess.CompletedProcess(args, int(strip_started and failed_stage in args))
             with self.subTest(stage=failed_stage):
-                with self.assertRaisesRegex(RuntimeError, "signature preparation failed"):
+                with self.assertRaisesRegex(PreparationError, "signature preparation failed") as caught:
                     prepare(self.app, runner=command)
+                self.assertEqual(
+                    caught.exception.report["error_code"],
+                    "framework_sign_failed" if failed_stage == "--force" else "framework_verify_failed",
+                )
+
+    def test_presigns_all_frameworks_before_any_strip_and_resigns_after(self):
+        outer = self.app / "Frameworks/Outer.framework"
+        inner = outer / "Frameworks/Inner.framework"
+        inner.mkdir(parents=True)
+        for framework in (outer, inner):
+            (framework / framework.stem).write_bytes(b"\xcf\xfa\xed\xfe" + b"code")
+        runner = Mock(return_value=subprocess.CompletedProcess([], 0))
+
+        self.assertEqual(prepare(self.app, runner=runner), 3)
+        commands = [call.args[0] for call in runner.call_args_list]
+        strip_indices = [i for i, args in enumerate(commands) if args[:2] == ["xcrun", "strip"]]
+        first_strip, last_strip = min(strip_indices), max(strip_indices)
+        self.assertEqual(len(strip_indices), 3)
+        self.assertEqual(first_strip, 2)
+        self.assertEqual([args[-1] for args in commands[:first_strip]], [str(inner), str(outer)])
+        for framework in (inner, outer):
+            sign_indices = [
+                i for i, args in enumerate(commands)
+                if args == ["codesign", "--force", "--sign", "-",
+                            "--preserve-metadata=identifier,entitlements", str(framework)]
+            ]
+            verify_indices = [
+                i for i, args in enumerate(commands)
+                if args == ["codesign", "--verify", "--strict", str(framework)]
+            ]
+            self.assertEqual(len(sign_indices), 2)
+            self.assertEqual(len(verify_indices), 1)
+            self.assertLess(sign_indices[0], first_strip)
+            self.assertGreater(sign_indices[1], last_strip)
+            self.assertGreater(verify_indices[0], sign_indices[1])
+
+    def test_presign_failure_blocks_before_any_strip(self):
+        for name in ("First", "Second"):
+            framework = self.app / f"Frameworks/{name}.framework"
+            framework.mkdir(parents=True)
+            (framework / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"code")
+        runner = Mock(side_effect=[
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 2, stderr=b"private-account/path: Permission denied"),
+        ])
+
+        with self.assertRaises(PreparationError) as caught:
+            prepare(self.app, runner=runner)
+        report = caught.exception.report
+        self.assertEqual(report["error_code"], "framework_presign_failed")
+        self.assertEqual(report["tool_exit"], 2)
+        self.assertEqual(report["reason"], "permission_denied")
+        self.assertNotIn("private-account", str(report))
+        self.assertNotIn(str(self.app), str(report))
+        self.assertEqual(runner.call_count, 2)
+        self.assertTrue(all(call.args[0][:2] == ["codesign", "--force"] for call in runner.call_args_list))
 
     def test_native_failure_diagnostic_does_not_echo_private_paths(self):
         runner = Mock(return_value=subprocess.CompletedProcess(

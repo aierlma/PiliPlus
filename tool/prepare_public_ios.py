@@ -101,11 +101,22 @@ def prepare(app, *, runner=subprocess.run):
                     paths.append(path)
     if not paths:
         raise ValueError("No native executables found")
+    frameworks = sorted(app.rglob("*.framework"), key=lambda item: -len(item.parts))
+    # Some prebuilt frameworks have a __LINKEDIT layout that strip rejects.
+    # Ad-hoc signing normalizes those inputs before any native file is stripped.
+    # These signatures are temporary: every framework is signed again below.
+    for framework in frameworks:
+        result = runner(
+            ["codesign", "--force", "--sign", "-", "--preserve-metadata=identifier,entitlements", str(framework)],
+            capture_output=True,
+        )
+        if result.returncode:
+            raise PreparationError("Public framework pre-signing failed", "framework_presign_failed", framework, app, result)
     for path in paths:
         result = runner(["xcrun", "strip", "-S", str(path)], capture_output=True)
         if result.returncode:
             raise PreparationError("Native debug-symbol removal failed", "native_strip_failed", path, app, result)
-    for framework in sorted(app.rglob("*.framework"), key=lambda item: -len(item.parts)):
+    for framework in frameworks:
         for command in (
             ["codesign", "--force", "--sign", "-", "--preserve-metadata=identifier,entitlements", str(framework)],
             ["codesign", "--verify", "--strict", str(framework)],
