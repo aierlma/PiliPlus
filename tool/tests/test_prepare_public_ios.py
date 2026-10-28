@@ -1,14 +1,15 @@
 """Privacy preparation must preserve resources and stop before publication on failure."""
 import plistlib
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_public_ios import PreparationError, prepare
+from prepare_public_ios import PreparationError, prepare, safe_diagnostic
 
 
 class PreparationTests(unittest.TestCase):
@@ -68,6 +69,24 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(report["reason"], "permission_denied")
         self.assertNotIn("private-account", str(report))
         self.assertNotIn(str(self.app), str(report))
+
+    def test_opt_in_diagnostic_redacts_paths_and_private_identity(self):
+        with patch.dict(os.environ, {
+                "RELEASE_NATIVE_DIAGNOSTICS": "1",
+                "RELEASE_PRIVATE_TERMS_JSON": '["synthetic_account"]'}):
+            value = safe_diagnostic(
+                b"/Users/synthetic_account/project/library: malformed object for SYNTHETIC_ACCOUNT", self.app)
+        self.assertIn("malformed object", value)
+        self.assertNotIn("synthetic_account", value.lower())
+        self.assertNotIn("/Users/", value)
+
+    def test_diagnostic_with_credentials_or_invalid_policy_is_withheld(self):
+        for terms in ('["synthetic_account"]', 'invalid'):
+            with self.subTest(terms=terms), patch.dict(os.environ, {
+                    "RELEASE_NATIVE_DIAGNOSTICS": "1",
+                    "RELEASE_PRIVATE_TERMS_JSON": terms}):
+                value = safe_diagnostic(b"failure ghp_" + b"a" * 36, self.app)
+                self.assertIsNone(value)
 
 
 if __name__ == "__main__":

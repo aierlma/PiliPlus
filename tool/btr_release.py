@@ -86,12 +86,35 @@ def scan_public_ipa(path):
         raise ValueError("Release privacy gate refused the IPA or could not complete") from None
 
 
-def verify_uploaded_assets(tag, expected):
+def find_release(tag):
+    """Find published or draft releases; the by-tag endpoint omits drafts."""
+    try:
+        match = None
+        page = 1
+        while True:
+            releases = api(f"releases?per_page=100&page={page}")
+            if not isinstance(releases, list):
+                raise ValueError
+            for release in releases:
+                if release["tag_name"] == tag:
+                    if (match is not None or type(release["id"]) is not int
+                            or release["id"] <= 0):
+                        raise ValueError
+                    match = release
+            if len(releases) < 100:
+                return match
+            page += 1
+    except Exception:
+        raise ValueError("Could not uniquely resolve the GitHub release") from None
+
+
+def verify_uploaded_assets(release_id, tag, expected):
     """Require GitHub's uploaded bytes to match the admitted local files."""
     try:
-        release = api(f"releases/tags/{tag}")
+        release = api(f"releases/{release_id}")
         assets = release["assets"]
-        if not release["draft"] or len(assets) != len(expected):
+        if (release["id"] != release_id or release["tag_name"] != tag
+                or release["draft"] is not True or len(assets) != len(expected)):
             raise ValueError
         for name, (size, digest) in expected.items():
             matches = [asset for asset in assets if asset["name"] == name]
@@ -292,7 +315,7 @@ def _publish_staged(info, version, build, tag, ipa, metadata, report, expected,
     # Make the validated object available for a draft tag, without advancing btr.
     stage = f"builds/validated-{source[:12]}"
     run("git", "push", "origin", f"{source}:refs/heads/{stage}")
-    existing = api(f"releases/tags/{tag}")
+    existing = find_release(tag)
     if existing and not existing["draft"]:
         raise ValueError("Release already published; refusing to replace its assets")
     body = f"PiliPlus BTR {info['version']}, build {build}\nBased on PiliPlus {version}\n\nSource: {source}\nOfficial PiliPlus upstream: {upstream}\nBTR author upstream: {btr_upstream}\nMinimum iOS: {info['min_os_version']}\nIPA SHA-256: {info['sha256']}\n\nBoth source histories are included. BTR tests, static analysis and unsigned iOS build passed. Sideloading is required. The numeric iOS version includes the personal build number so SideStore can offer this package as a source update."
@@ -307,7 +330,10 @@ def _publish_staged(info, version, build, tag, ipa, metadata, report, expected,
     else:
         run("gh", "release", "upload", tag, str(ipa), str(metadata), "--repo", REPO, "--clobber")
     verify_artifact_hash(ipa, report)
-    verify_uploaded_assets(tag, expected)
+    release = existing or find_release(tag)
+    if release is None:
+        raise ValueError("Uploaded draft could not be found; refusing publication")
+    verify_uploaded_assets(release["id"], tag, expected)
     # This non-force push also detects changes made after the earlier check.
     run("git", "push", "origin", f"{source}:refs/heads/btr")
     run("gh", "release", "edit", tag, "--repo", REPO, "--notes-file", str(notes), "--draft=false", "--latest")

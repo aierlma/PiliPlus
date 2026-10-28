@@ -3,9 +3,13 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
+import tempfile
+import zipfile
 
 
 MACHO_MAGIC = {
@@ -14,6 +18,36 @@ MACHO_MAGIC = {
     b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
     b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
 }
+
+
+def safe_diagnostic(stderr, app):
+    """Opt-in native errors must pass the same privacy rules as artifacts."""
+    if os.environ.get("RELEASE_NATIVE_DIAGNOSTICS") != "1":
+        return None
+    try:
+        from check_public_identity import _patterns
+        from release_privacy import scan_artifact
+        terms = json.loads(os.environ["RELEASE_PRIVATE_TERMS_JSON"])
+        patterns = _patterns(terms)
+        if not stderr or len(stderr) > 16 * 1024:
+            return None
+        value = stderr.decode("utf-8", errors="replace")
+        for path in (str(app.resolve()), str(app), str(Path.cwd()), str(Path.home())):
+            value = value.replace(path, "[path]")
+        value = re.sub(r"\S*[/\\]\S*", "[path]", value)
+        for pattern in patterns:
+            value = pattern.sub("[redacted]", value)
+        value = value[:4000]
+        with tempfile.TemporaryDirectory(prefix="native-diagnostic-") as directory:
+            artifact = Path(directory) / "diagnostic.zip"
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("diagnostic.txt", value)
+            report = scan_artifact(artifact, blocked_terms=terms)
+        if report["status"] == "pass" and report["complete"]:
+            return value
+    except Exception:
+        pass
+    return None
 
 
 class PreparationError(RuntimeError):
@@ -37,6 +71,9 @@ class PreparationError(RuntimeError):
             "tool_exit": result.returncode,
             "reason": next((v for k, v in categories.items() if k in diagnostic), "tool_failure"),
         }
+        safe = safe_diagnostic(result.stderr, app)
+        if safe:
+            self.report["diagnostic"] = safe
 
 
 def prepare(app, *, runner=subprocess.run):

@@ -95,6 +95,8 @@ jobs:
       - name: Build and verify unsigned IPA
         id: package
         env:
+          RELEASE_NATIVE_DIAGNOSTICS: '1'
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
           UPSTREAM: ${{ needs.plan.outputs.upstream }}
           BTR_UPSTREAM: ${{ needs.plan.outputs.btr_upstream }}
         run: |

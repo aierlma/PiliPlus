@@ -36,6 +36,8 @@ class ReleaseGateTests(unittest.TestCase):
         self.push_permission = True
         self.repository_name = btr_release.REPO
         self.remote_assets = None
+        self.release_id = 271
+        self.other_releases = []
         self.existing_draft = False
         self.remote_corruption = None
         self.before_upload = None
@@ -71,6 +73,11 @@ class ReleaseGateTests(unittest.TestCase):
             value = {"full_name": self.repository_name,
                      "permissions": {"push": self.push_permission}}
             return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+        prefix = f"repos/{btr_release.REPO}/"
+        if args[:2] == ("gh", "api") and args[2].startswith(prefix):
+            value = self.release_api(args[2][len(prefix):])
+            return subprocess.CompletedProcess(args, int(value is None),
+                json.dumps(value), "gh: Not Found (HTTP 404)" if value is None else "")
         if args[:2] == ("git", "push"):
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[:3] in (("gh", "release", "create"), ("gh", "release", "upload")):
@@ -99,11 +106,28 @@ class ReleaseGateTests(unittest.TestCase):
 
     def release_api(self, path):
         self.calls.append(("api", path))
-        if self.remote_assets is None:
-            if self.before_upload:
-                self.before_upload()
-            return {"draft": True, "assets": []} if self.existing_draft else None
-        return {"draft": True, "assets": self.remote_assets}
+        # GitHub's by-tag REST contract covers published releases, not drafts.
+        if path.startswith("releases/tags/"):
+            return None
+        if self.remote_assets is None and self.before_upload:
+            self.before_upload()
+            self.before_upload = None
+        release = {"id": self.release_id, "tag_name": self.tag,
+                   "draft": True, "assets": self.remote_assets or []}
+        exists = self.existing_draft or self.remote_assets is not None
+        if path.startswith("releases?per_page=100&page="):
+            page = int(path.rsplit("=", 1)[1])
+            releases = self.other_releases + ([release] if exists else [])
+            return releases[(page - 1) * 100:page * 100]
+        if path == f"releases/{self.release_id}":
+            if self.remote_corruption == "release_id":
+                release["id"] += 1
+            elif self.remote_corruption == "tag":
+                release["tag_name"] = "another-tag"
+            elif self.remote_corruption == "published":
+                release["draft"] = False
+            return release if exists else None
+        raise AssertionError(f"Unexpected mocked release endpoint: {path}")
 
     def publish(self, *, environment=None, scanner=None):
         original_scan = release_privacy.assert_public_artifact
@@ -119,7 +143,6 @@ class ReleaseGateTests(unittest.TestCase):
             stack.enter_context(patch.object(btr_release, "check_latest_release_progress"))
             stack.enter_context(patch.object(btr_release, "close_resolved_failures"))
             stack.enter_context(patch.object(btr_release, "run", side_effect=self.command))
-            stack.enter_context(patch.object(btr_release, "api", side_effect=self.release_api))
             stack.enter_context(patch.object(release_privacy, "assert_public_artifact", side_effect=scan))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             btr_release.publish("d" * 40, self.upstream, self.author)
@@ -156,6 +179,47 @@ class ReleaseGateTests(unittest.TestCase):
         edit = next(call for call in self.calls if call[:3] == ("gh", "release", "edit"))
         self.assertIn("--notes-file", edit)
         self.assertEqual(self.scanned, self.uploaded[:1])
+
+    def test_draft_tag_endpoint_404_still_recovers_draft_on_later_page(self):
+        self.existing_draft = True
+        self.other_releases = [{"id": 1000 + index, "tag_name": f"old-{index}"}
+                               for index in range(100)]
+        with patch.object(btr_release, "run", side_effect=self.command):
+            self.assertIsNone(btr_release.api(f"releases/tags/{self.tag}"))
+        self.publish()
+        self.assertIn(("api", "releases?per_page=100&page=2"), self.calls)
+        self.assertIn(("api", f"releases/{self.release_id}"), self.calls)
+        self.assertTrue(any(call[:3] == ("gh", "release", "upload") for call in self.calls))
+        self.assertFalse(any(call[:3] == ("gh", "release", "create") for call in self.calls))
+        self.assertTrue(any(call[:3] == ("gh", "release", "edit") for call in self.calls))
+
+    def test_new_draft_is_read_by_id_before_publication(self):
+        self.publish()
+        create = next(i for i, call in enumerate(self.calls) if call[:3] == ("gh", "release", "create"))
+        readback = self.calls.index(("api", f"releases/{self.release_id}"))
+        edit = next(i for i, call in enumerate(self.calls) if call[:3] == ("gh", "release", "edit"))
+        self.assertLess(create, readback)
+        self.assertLess(readback, edit)
+        self.assertFalse(any(call[0] == "api" and call[1].startswith("releases/tags/")
+                             for call in self.calls))
+
+    def test_ambiguous_draft_tags_refuse_upload(self):
+        self.existing_draft = True
+        self.other_releases = [{"id": self.release_id + 1, "tag_name": self.tag,
+                                "draft": True, "assets": []}]
+        with self.assertRaisesRegex(ValueError, "uniquely resolve"):
+            self.publish()
+        self.assertEqual(self.uploaded, [])
+        self.assert_not_public()
+
+    def test_readback_release_identity_or_state_change_refuses_publication(self):
+        for corruption in ("release_id", "tag", "published"):
+            with self.subTest(corruption=corruption):
+                self.remote_assets, self.calls = None, []
+                self.remote_corruption = corruption
+                with self.assertRaisesRegex(ValueError, "draft remains unpublished"):
+                    self.publish()
+                self.assert_not_public()
 
     def test_credentials_refuse_before_push_or_upload(self):
         self.write_ipa(b"SESSDATA=" + b"s" * 32)
