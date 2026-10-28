@@ -34,29 +34,70 @@ def api(path):
 
 
 def verify_publishing_identity():
-    """Authenticate the publisher, including Actions installation tokens."""
+    """Verify the principal and Git write access without changing remote refs."""
     actions = os.environ.get("GITHUB_ACTIONS") == "true"
-    if actions and os.environ.get("GITHUB_REPOSITORY") != REPO:
-        raise ValueError("CI publication is restricted to the personal repository")
+    stage = "ci_repository"
     try:
+        if actions and os.environ.get("GITHUB_REPOSITORY") != REPO:
+            raise ValueError
+        stage = "user_lookup"
         user = run("gh", "api", "user", check=False)
+        login = None
         if user.returncode == 0:
             login = json.loads(user.stdout)["login"].casefold()
+            stage = "user_identity"
             if login != "aierlma" and not (actions and login == "github-actions[bot]"):
                 raise ValueError
         elif not actions:
             raise ValueError
         if actions:
-            # GITHUB_TOKEN may not implement /user. Do not trust environment
-            # variables alone: the active token must have push access here.
-            repository = run("gh", "api", f"repos/{REPO}", check=False)
-            data = json.loads(repository.stdout)
-            if (repository.returncode or data.get("full_name") != REPO
-                    or data.get("permissions", {}).get("push") is not True):
+            stage = "ci_token"
+            if not os.environ.get("GH_TOKEN", "").strip():
                 raise ValueError
+            # Actions installation tokens reject /user and can report false/null
+            # repository permission fields despite having Contents write access.
+            stage = "ci_principal"
+            query = ('query { viewer { login } repository(owner: "aierlma", '
+                     'name: "PiliPlus") { nameWithOwner } }')
+            response = run("gh", "api", "graphql", "-f", f"query={query}", check=False)
+            data = json.loads(response.stdout)
+            if response.returncode or data.get("errors"):
+                raise ValueError
+            viewer = data["data"]["viewer"]["login"].casefold()
+            if (viewer not in ("aierlma", "github-actions[bot]")
+                    or (login is not None and viewer != login)):
+                raise ValueError
+            stage = "ci_repository"
+            if data["data"]["repository"]["nameWithOwner"] != REPO:
+                raise ValueError
+            if viewer == "github-actions[bot]":
+                stage = "installation_scope"
+                page = 1
+                while True:
+                    response = run("gh", "api", f"installation/repositories?per_page=100&page={page}", check=False)
+                    repositories = json.loads(response.stdout)["repositories"]
+                    if response.returncode or not isinstance(repositories, list):
+                        raise ValueError
+                    if any(repository["full_name"] == REPO for repository in repositories):
+                        break
+                    if len(repositories) < 100:
+                        raise ValueError
+                    page += 1
+        stage = "git_write_probe"
+        # Use the same gh credentials as the API calls, never a cached Git
+        # account or a token in argv. A dry run does not create this branch.
+        result = run("git", "-c", "credential.helper=",
+                     "-c", "credential.helper=!gh auth git-credential",
+                     "-c", "http.extraheader=",
+                     "-c", "http.https://github.com/.extraheader=",
+                     "push", "--dry-run", "--porcelain",
+                     f"https://github.com/{REPO}.git",
+                     "HEAD:refs/heads/builds/publisher-auth-check", check=False)
+        if result.returncode:
+            raise ValueError
     except Exception:
-        # gh errors and unexpected API values must not echo account details.
-        raise ValueError("GitHub publishing identity or repository permission could not be verified") from None
+        # Fixed stages diagnose failures without echoing account or token data.
+        raise ValueError(f"GitHub publishing identity verification failed [{stage}]") from None
 
 
 def stage_ipa(source, destination):

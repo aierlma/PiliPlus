@@ -35,6 +35,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.user_code = 0
         self.push_permission = True
         self.repository_name = btr_release.REPO
+        self.viewer_login = None
+        self.auth_overrides = {}
+        self.installation_repositories = [{"full_name": btr_release.REPO,
+            "permissions": {key: False for key in ("admin", "maintain", "push", "triage", "pull")}}]
+        self.dry_run_code = 0
+        self.actions_environment = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": btr_release.REPO,
+                                    "GH_TOKEN": "synthetic-ci-token"}
         self.remote_assets = None
         self.release_id = 271
         self.other_releases = []
@@ -66,9 +73,22 @@ class ReleaseGateTests(unittest.TestCase):
 
     def command(self, *args, **kwargs):
         self.calls.append(args)
+        if args[:2] == ("gh", "api") and args[2] in self.auth_overrides:
+            code, body = self.auth_overrides[args[2]]
+            return subprocess.CompletedProcess(args, code, body, "synthetic private API diagnostic")
         if args == ("gh", "api", "user"):
             return subprocess.CompletedProcess(args, self.user_code,
                                                json.dumps({"login": self.user}), "")
+        if args[:3] == ("gh", "api", "graphql"):
+            login = self.viewer_login or (self.user if self.user_code == 0 else "github-actions[bot]")
+            value = {"data": {"viewer": {"login": login},
+                     "repository": {"nameWithOwner": self.repository_name, "viewerPermission": None}}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+        if args[:2] == ("gh", "api") and args[2].startswith("installation/repositories?"):
+            page = int(args[2].rsplit("=", 1)[1])
+            value = {"total_count": len(self.installation_repositories),
+                     "repositories": self.installation_repositories[(page - 1) * 100:page * 100]}
+            return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
         if args == ("gh", "api", f"repos/{btr_release.REPO}"):
             value = {"full_name": self.repository_name,
                      "permissions": {"push": self.push_permission}}
@@ -80,6 +100,8 @@ class ReleaseGateTests(unittest.TestCase):
                 json.dumps(value), "gh: Not Found (HTTP 404)" if value is None else "")
         if args[:2] == ("git", "push"):
             return subprocess.CompletedProcess(args, 0, "", "")
+        if args[0] == "git" and "push" in args and "--dry-run" in args:
+            return subprocess.CompletedProcess(args, self.dry_run_code, "", "synthetic private Git diagnostic")
         if args[:3] in (("gh", "release", "create"), ("gh", "release", "upload")):
             self.remote_assets = []
             for name in args[4:6]:
@@ -297,27 +319,113 @@ class ReleaseGateTests(unittest.TestCase):
                     self.publish()
                 self.assert_not_public()
 
-    def test_actions_token_without_user_endpoint_needs_real_push_permission(self):
+    def test_actual_actions_false_permissions_and_null_viewer_permission_are_supported(self):
         self.user_code = 1
-        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": btr_release.REPO}
         self.push_permission = False
-        with self.assertRaisesRegex(ValueError, "identity"):
+        self.publish(environment=self.actions_environment)
+        self.assertTrue(any(call[:3] == ("gh", "api", "graphql") for call in self.calls))
+        self.assertIn(("gh", "api", "installation/repositories?per_page=100&page=1"), self.calls)
+        self.assertTrue(any(call[0] == "git" and "--dry-run" in call for call in self.calls))
+        self.assertTrue(any(call[:3] == ("gh", "release", "edit") for call in self.calls))
+
+    def test_actions_dry_run_failure_blocks_all_remote_writes(self):
+        self.user_code = 1
+        self.dry_run_code = 1
+        with self.assertRaisesRegex(ValueError, r"\[git_write_probe\]") as caught:
+            self.publish(environment=self.actions_environment)
+        self.assertNotIn("private Git diagnostic", str(caught.exception))
+        self.assert_no_remote_writes()
+
+    def test_actions_wrong_graphql_principal_is_rejected(self):
+        self.user_code = 1
+        self.viewer_login = "another-account"
+        with self.assertRaisesRegex(ValueError, r"\[ci_principal\]"):
+            self.publish(environment=self.actions_environment)
+        self.assert_no_remote_writes()
+
+    def test_actions_graphql_repository_must_match(self):
+        self.user_code = 1
+        self.repository_name = "someone/PiliPlus"
+        with self.assertRaisesRegex(ValueError, r"\[ci_repository\]"):
+            self.publish(environment=self.actions_environment)
+        self.assert_no_remote_writes()
+
+    def test_actions_bot_requires_installation_membership(self):
+        self.user_code = 1
+        self.installation_repositories = [{"full_name": "someone/PiliPlus"}]
+        with self.assertRaisesRegex(ValueError, r"\[installation_scope\]"):
+            self.publish(environment=self.actions_environment)
+        self.assert_no_remote_writes()
+
+    def test_actions_bot_installation_membership_can_be_on_later_page(self):
+        self.user_code = 1
+        self.installation_repositories = [{"full_name": f"someone/repo-{index}"} for index in range(100)] + self.installation_repositories
+        self.publish(environment=self.actions_environment)
+        self.assertIn(("gh", "api", "installation/repositories?per_page=100&page=2"), self.calls)
+
+    def test_actions_owner_uses_graphql_identity_and_git_probe(self):
+        self.publish(environment=self.actions_environment)
+        self.assertFalse(any(call[:2] == ("gh", "api") and call[2].startswith("installation/") for call in self.calls))
+        self.assertTrue(any(call[0] == "git" and "--dry-run" in call for call in self.calls))
+
+    def test_actions_user_and_graphql_principals_must_agree(self):
+        self.viewer_login = "github-actions[bot]"
+        with self.assertRaisesRegex(ValueError, r"\[ci_principal\]"):
+            self.publish(environment=self.actions_environment)
+        self.assert_no_remote_writes()
+
+    def test_actions_api_parse_errors_are_redacted_and_block_publication(self):
+        endpoints = (("user", "user_lookup"), ("graphql", "ci_principal"),
+                     ("installation/repositories?per_page=100&page=1", "installation_scope"))
+        for endpoint, stage in endpoints:
+            with self.subTest(endpoint=endpoint):
+                self.calls = []
+                self.user_code = int(endpoint != "user")
+                self.auth_overrides = {endpoint: (0, "/Users/synthetic_private_person/not-json")}
+                with self.assertRaisesRegex(ValueError, rf"\[{stage}\]") as caught:
+                    self.publish(environment=self.actions_environment)
+                self.assertNotIn("synthetic_private_person", str(caught.exception))
+                self.assertIsNone(caught.exception.__cause__)
+                self.assertTrue(caught.exception.__suppress_context__)
+                self.assert_no_remote_writes()
+
+    def test_actions_graphql_errors_do_not_admit_partial_identity_data(self):
+        self.user_code = 1
+        self.auth_overrides["graphql"] = (0, json.dumps({"errors": [{"message": "private diagnostic"}],
+            "data": {"viewer": {"login": "github-actions[bot]"}, "repository": {"nameWithOwner": btr_release.REPO}}}))
+        with self.assertRaisesRegex(ValueError, r"\[ci_principal\]") as caught:
+            self.publish(environment=self.actions_environment)
+        self.assertNotIn("private diagnostic", str(caught.exception))
+        self.assert_no_remote_writes()
+
+    def test_git_probe_uses_fixed_https_repo_and_gh_credentials_without_token_in_argv(self):
+        self.publish(environment=self.actions_environment)
+        probe = next(call for call in self.calls if call[0] == "git" and "--dry-run" in call)
+        self.assertIn("credential.helper=", probe)
+        self.assertIn("credential.helper=!gh auth git-credential", probe)
+        self.assertIn("http.https://github.com/.extraheader=", probe)
+        self.assertIn(f"https://github.com/{btr_release.REPO}.git", probe)
+        self.assertNotIn("origin", probe)
+        self.assertNotIn("--no-verify", probe)
+        self.assertNotIn(self.actions_environment["GH_TOKEN"], " ".join(probe))
+
+    def test_actions_missing_explicit_token_is_rejected(self):
+        environment = dict(self.actions_environment)
+        del environment["GH_TOKEN"]
+        with self.assertRaisesRegex(ValueError, r"\[ci_token\]"):
             self.publish(environment=environment)
         self.assert_no_remote_writes()
-        self.calls = []
-        self.push_permission = True
-        self.publish(environment=environment)
-        self.assertIn(("gh", "api", f"repos/{btr_release.REPO}"), self.calls)
 
     def test_actions_environment_does_not_admit_another_human_account(self):
         self.user = "another-account"
-        with self.assertRaisesRegex(ValueError, "identity"):
-            self.publish(environment={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": btr_release.REPO})
+        with self.assertRaisesRegex(ValueError, r"\[user_identity\]"):
+            self.publish(environment=self.actions_environment)
+        self.assertFalse(any(call[:3] == ("gh", "api", "graphql") for call in self.calls))
         self.assert_no_remote_writes()
 
     def test_actions_token_from_another_repository_is_rejected(self):
         self.user_code = 1
-        with self.assertRaisesRegex(ValueError, "restricted"):
+        with self.assertRaisesRegex(ValueError, r"\[ci_repository\]"):
             self.publish(environment={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "someone/fork"})
         self.assert_no_remote_writes()
 
@@ -327,7 +435,7 @@ class ReleaseGateTests(unittest.TestCase):
             self.publish()
         self.assert_no_remote_writes()
         self.calls = []
-        self.publish(environment={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": btr_release.REPO})
+        self.publish(environment=self.actions_environment)
 
     def test_docs_only_sync_still_runs_the_artifact_gate(self):
         self.app_changes = []
