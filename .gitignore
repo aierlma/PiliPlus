@@ -150,9 +150,11 @@ pili_release.json
 dist
 
 test*
+!/test/
+!/test/**
 
 # ================= BTR 移植（我们的改动）=================
-# 上游把整个 test/ 忽略了；显式放行我们新增的测试（含镜像测试台产物）
+# 保留 BTR 测试与维护测试的放行规则
 !test/
 !test/standalone/
 !tool/tests/

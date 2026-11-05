@@ -161,6 +161,72 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
         self.assertEqual(git("status", "--porcelain"), "")
 
+    def stage_gitignore_conflict(self, *, preapply=True, official_extra=""):
+        # Use the real personal rules, with the original no-newline merge base.
+        personal = (Path(__file__).resolve().parents[2] / ".gitignore").read_text()
+        prefix, suffix = personal.split("test*\n!/test/\n!/test/**\n", 1)
+        common = prefix + "test*"
+        git("checkout", "official")
+        Path(".gitignore").write_text(common)
+        git("add", ".gitignore")
+        git("commit", "-m", "common ignore rules")
+        git("checkout", "btr")
+        git("merge", "--no-edit", "official")
+        local = personal if preapply else common + "\n" + suffix
+        Path(".gitignore").write_text(local)
+        git("add", ".gitignore")
+        git("commit", "-m", "personal ignore rules")
+        self.base = git("rev-parse", "HEAD")
+        git("checkout", "official")
+        Path(".gitignore").write_text(common + "\n!/test/\n!/test/**\n" + official_extra)
+        git("add", ".gitignore")
+        git("commit", "-m", "official test allowance")
+        upstream = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+        return upstream, local
+
+    def test_preapplied_official_ignore_rules_preserve_btr_rules(self):
+        upstream, personal = self.stage_gitignore_conflict()
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), personal)
+        for path, ignored in (
+            ("test/pages/new_test.dart", False),
+            ("test/fixtures/media_url.txt.example", False),
+            ("nested/test/example.dart", False),
+            ("tool/tests/test_new.py", False),
+            ("test/fixtures/media_url.txt", True),
+            ("test/btr_proxy_e2e_test.dart", True),
+            ("test/BTR_notes.md", True),
+            ("btr_reference/source.dart", True),
+            ("BTR-PiliPlus.patch", True),
+            ("nested/test/test_hidden.dart", True),
+        ):
+            with self.subTest(path=path):
+                result = subprocess.run(
+                    ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", "-q", path],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0 if ignored else 1, result.stderr)
+        for sha in (upstream, self.author_base):
+            self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
+        self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_ignore_conflict_is_not_resolved_without_preapplied_official_rules(self):
+        upstream, personal = self.stage_gitignore_conflict(preapply=False)
+        with self.assertRaisesRegex(ValueError, "manual resolution: .gitignore"):
+            prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), personal)
+        self.assertEqual(git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_ignore_conflict_with_extra_official_changes_still_stops(self):
+        upstream, personal = self.stage_gitignore_conflict(official_extra="extra-official-rule\n")
+        with self.assertRaisesRegex(ValueError, "manual resolution: .gitignore"):
+            prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), personal)
+        self.assertEqual(git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_lagging_btr_author_does_not_revert_new_official_source(self):
         upstream = self.official()
         current = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
