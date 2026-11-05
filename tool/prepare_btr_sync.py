@@ -8,6 +8,21 @@ def git(*args, check=True):
     return subprocess.run(["git", *args], check=check, capture_output=True, text=True)
 
 
+def resolve_preapplied_gitignore():
+    """Resolve only an upstream test allowance already present in full locally."""
+    stages = [git("show", f":{stage}:.gitignore", check=False) for stage in (1, 2, 3)]
+    if any(result.returncode for result in stages):
+        return False
+    common, personal, official = (result.stdout for result in stages)
+    if not common.endswith("test*"):
+        return False
+    if official != common + "\n!/test/\n!/test/**\n" or not personal.startswith(official):
+        return False
+    Path(".gitignore").write_text(personal, encoding="utf-8")
+    git("add", "--", ".gitignore")
+    return True
+
+
 def prepare(upstream, base, btr_upstream):
     if git("rev-parse", "HEAD").stdout.strip() != base:
         raise ValueError("Personal branch moved since planning")
@@ -25,6 +40,8 @@ def prepare(upstream, base, btr_upstream):
             # Both source projects' workflows require separate personal review.
             git("restore", "--source=HEAD", "--staged", "--worktree", ".github/workflows")
             conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+            if label == "official PiliPlus" and conflicts == ".gitignore" and resolve_preapplied_gitignore():
+                conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
             merge_pending = git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode == 0
             if conflicts or (result.returncode and not merge_pending):
                 raise ValueError(f"{label} merge requires manual resolution: {conflicts or result.stderr}")
