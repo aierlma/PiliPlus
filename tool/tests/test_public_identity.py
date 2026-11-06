@@ -1,5 +1,6 @@
 """Behavior checks for the source and publication identity guard."""
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -84,6 +85,82 @@ class PublicIdentityTests(unittest.TestCase):
         self.git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
         self.commit("automatic merge")
         self.assertEqual(self.scan()["status"], "pass")
+
+    def webflow_commit(self):
+        (self.root / "source.txt").write_text("public source")
+        self.git("add", ".")
+        env = dict(os.environ, GIT_AUTHOR_NAME="Aierlma",
+                   GIT_AUTHOR_EMAIL="55280375+aierlma@users.noreply.github.com",
+                   GIT_COMMITTER_NAME="GitHub", GIT_COMMITTER_EMAIL="noreply@github.com")
+        self.git("commit", "-m", "Public change", env=env)
+        sha = self.git("rev-parse", "HEAD").stdout.decode().strip()
+        return {"sha": sha, "author": {"login": "aierlma"}, "committer": {"login": "web-flow"},
+                "commit": {"author": {"name": "Aierlma", "email": env["GIT_AUTHOR_EMAIL"]},
+                           "committer": {"name": "GitHub", "email": "noreply@github.com"},
+                           "verification": {"verified": True, "reason": "valid"}}}
+
+    def test_verified_webflow_commit_is_accepted_without_skipping_private_scan(self):
+        record = self.webflow_commit()
+        with patch.dict(os.environ, {"GH_TOKEN": "test-token"}), \
+                patch.object(guard, "_github_commit_record", return_value=record) as fetch:
+            self.assertEqual(self.scan()["status"], "pass")
+            fetch.assert_called_once_with(record["sha"])
+            self.assertEqual(self.scan(["GitHub"])["status"], "blocked")
+            (self.root / "source.txt").write_text("PrivatePerson")
+            report = self.scan()
+            self.assertEqual(report["status"], "blocked")
+            self.assertNotIn("PrivatePerson", json.dumps(report))
+
+    def test_unverified_or_mismatched_webflow_commit_is_rejected(self):
+        record = self.webflow_commit()
+        variants = []
+        for path, value in ((('sha',), '0' * 40),
+                            (('author', 'login'), 'someone-else'),
+                            (('committer', 'login'), 'someone-else'),
+                            (('commit', 'author', 'name'), 'someone-else'),
+                            (('commit', 'author', 'email'), 'other@example.invalid'),
+                            (('commit', 'committer', 'email'), 'other@example.invalid'),
+                            (('commit', 'verification', 'verified'), False),
+                            (('commit', 'verification', 'reason'), 'unknown_key')):
+            bad = copy.deepcopy(record)
+            target = bad
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            variants.append(bad)
+        variants.extend(({}, None))
+        with patch.dict(os.environ, {"GH_TOKEN": "test-token"}):
+            for bad in variants:
+                with self.subTest(record=bad), patch.object(guard, "_github_commit_record", return_value=bad):
+                    self.assertEqual(self.scan()["status"], "blocked")
+            for error in (OSError(), subprocess.TimeoutExpired("gh", 20), ValueError()):
+                with self.subTest(error=type(error).__name__), patch.object(guard, "_github_commit_record", side_effect=error):
+                    self.assertEqual(self.scan()["status"], "blocked")
+        with patch.dict(os.environ, {"GH_TOKEN": ""}), patch.object(guard, "_github_commit_record") as fetch:
+            self.assertEqual(self.scan()["status"], "blocked")
+            fetch.assert_not_called()
+
+    def test_webflow_shape_rejects_other_authors_and_non_noreply_addresses(self):
+        self.webflow_commit()
+        bad_shapes = [
+            ["SomeoneElse", "55280375+aierlma@users.noreply.github.com", "GitHub", "noreply@github.com"],
+            ["Aierlma", "other@example.invalid", "GitHub", "noreply@github.com"],
+            ["Aierlma", "55280375+aierlma@users.noreply.github.com", "GitHub", "other@example.invalid"],
+        ]
+        with patch.dict(os.environ, {"GH_TOKEN": "test-token"}), patch.object(guard, "_github_commit_record") as fetch:
+            for identity in bad_shapes:
+                with self.subTest(identity=identity):
+                    self.assertFalse(guard._verified_webflow_identity(self.root, identity, "aierlma"))
+            fetch.assert_not_called()
+
+    def test_verification_uses_fixed_github_endpoint_without_token_in_arguments(self):
+        sha = "a" * 40
+        response = subprocess.CompletedProcess([], 0, stdout='{"sha":"ok"}', stderr="")
+        with patch.object(guard.subprocess, "run", return_value=response) as run:
+            self.assertEqual(guard._github_commit_record(sha), {"sha": "ok"})
+        self.assertEqual(run.call_args.args[0], ["gh", "api", "--hostname", "github.com",
+                                               f"repos/aierlma/PiliPlus/commits/{sha}"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
 
     def test_symlink_or_large_file_refuses_incomplete_scan(self):
         self.commit()

@@ -92,11 +92,47 @@ def _read_source(root, name):
         return data
 
 
+def _owner_noreply(email, owner):
+    return re.fullmatch(r"(?:[0-9]+\+)?" + re.escape(owner) + r"@users\.noreply\.github\.com", email) is not None
+
+
 def _valid_identity(name, email, owner):
     if name == owner:
-        return re.fullmatch(r"(?:[0-9]+\+)?" + re.escape(owner) + r"@users\.noreply\.github\.com", email) is not None
+        return _owner_noreply(email, owner)
     return (name == "github-actions[bot]"
             and email == "41898282+github-actions[bot]@users.noreply.github.com")
+
+
+def _github_commit_record(sha):
+    result = subprocess.run(
+        ["gh", "api", "--hostname", "github.com", f"repos/{REPOSITORY}/commits/{sha}"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+    )
+    return json.loads(result.stdout)
+
+
+def _verified_webflow_identity(root, identity, owner):
+    """Accept only the owner's public identity on a GitHub-signed web commit."""
+    name, email, committer, committer_email = identity
+    if (name.casefold() != owner.casefold() or not _owner_noreply(email, owner)
+            or (committer, committer_email) != ("GitHub", "noreply@github.com")
+            or not os.environ.get("GH_TOKEN")):
+        return False
+    try:
+        sha = _git(root, "rev-parse", "HEAD").decode("ascii").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            return False
+        record = _github_commit_record(sha)
+        commit = record["commit"]
+        verification = commit["verification"]
+        return (record["sha"] == sha
+                and record["author"]["login"].casefold() == owner.casefold()
+                and record["committer"]["login"] == "web-flow"
+                and (commit["author"]["name"], commit["author"]["email"],
+                     commit["committer"]["name"], commit["committer"]["email"]) == tuple(identity)
+                and verification["verified"] is True and verification["reason"] == "valid")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError):
+        return False
 
 
 def check_public_identity(root, private_terms, expected_owner="aierlma", *, line_exceptions=()):
@@ -111,8 +147,12 @@ def check_public_identity(root, private_terms, expected_owner="aierlma", *, line
         identity = _git(root, "show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce", "HEAD").rstrip(b"\n").decode("utf-8").split("\0")
         if len(identity) != 4:
             raise ValueError
+        valid = [_valid_identity(name, email, expected_owner)
+                 for name, email in zip(identity[::2], identity[1::2])]
+        if not all(valid) and _verified_webflow_identity(root, identity, expected_owner):
+            valid = [True, True]
         for index, (name, email) in enumerate(zip(identity[::2], identity[1::2])):
-            if not _valid_identity(name, email, expected_owner):
+            if not valid[index]:
                 report["findings"].append({"rule": "unexpected_commit_identity", "identity_index": index})
             if _contains_private(name + "\n" + email, patterns):
                 report["findings"].append({"rule": "private_identity", "identity_index": index})

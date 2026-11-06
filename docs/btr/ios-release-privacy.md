@@ -9,8 +9,11 @@ downloaded unsigned packages through SideStore.
 
 The personal repository is `aierlma/PiliPlus`. Human commits use `aierlma` and
 the matching GitHub noreply address. Automated merges use the official
-`github-actions[bot]` identity. This policy checks the publication commit;
-inherited upstream authors are preserved.
+`github-actions[bot]` identity. A GitHub web commit with the owner's public
+noreply address and GitHub's noreply committer is also accepted only after the
+GitHub API verifies its signature, owner, committer and exact commit metadata.
+If verification is unavailable or fails, publication stops. This policy checks
+the publication commit; inherited upstream authors are preserved.
 
 Configure the repository Actions secret `RELEASE_PRIVATE_TERMS_JSON` as a
 nonempty JSON array of private local account names or identifiers that must

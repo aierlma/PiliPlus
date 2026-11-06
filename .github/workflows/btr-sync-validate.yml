@@ -22,6 +22,7 @@ on:
       - tool/release-privacy-policy.json
       - tool/prepare_public_ios.py
       - tool/check_public_identity.py
+      - tool/tests/test_public_identity.py
       - .github/workflows/btr-maintain.yml
       - .github/workflows/btr-sync-validate.yml
 
@@ -41,6 +42,17 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Verify publisher identity against the current base
+        env:
+          RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base_checkout="$RUNNER_TEMP/piliplus-identity-base"
+          git worktree add --detach "$base_checkout" "$BASE_SHA"
+          (cd "$base_checkout" && python3 "$GITHUB_WORKSPACE/tool/check_public_identity.py")
+          git worktree remove "$base_checkout"
       - name: Verify exact PR head and replay blocked sources
         env:
           RELEASE_PRIVATE_TERMS_JSON: ${{ secrets.RELEASE_PRIVATE_TERMS_JSON }}
