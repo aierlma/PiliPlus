@@ -227,6 +227,94 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(git("rev-parse", "HEAD"), self.base)
         self.assertEqual(git("status", "--porcelain"), "")
 
+    def stage_combined_conflicts(self, *, personal_extra="", official_extra="", other_conflict=False):
+        root = Path(__file__).resolve().parents[2]
+        ignore = (root / ".gitignore").read_text()
+        prefix, _ = ignore.split("test*\n!/test/\n!/test/**\n", 1)
+        ignore_common = prefix + "test*"
+        common_sha, personal_sha, _ = prepare_btr_sync.AUDIO_SESSION_STAGES
+        def blob(sha):
+            return subprocess.check_output(["git", "-C", str(root), "cat-file", "blob", sha], text=True)
+        common, personal = blob(common_sha), blob(personal_sha) + personal_extra
+        official = (root / "tool/tests/fixtures/audio_session_official.txt").read_text() + official_extra
+        audio = Path(prepare_btr_sync.AUDIO_SESSION_PATH)
+        git("checkout", "official")
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_text(common)
+        Path(".gitignore").write_text(ignore_common)
+        git("add", ".gitignore", str(audio))
+        git("commit", "-m", "common ignore and audio")
+        git("checkout", "btr")
+        git("merge", "--no-edit", "official")
+        audio.write_text(personal)
+        Path(".gitignore").write_text(ignore)
+        if other_conflict:
+            Path("source.dart").write_text("personal unrelated change")
+        git("add", ".gitignore", str(audio), "source.dart")
+        git("commit", "-m", "personal ignore and audio")
+        self.base = git("rev-parse", "HEAD")
+        git("checkout", "official")
+        audio.write_text(official)
+        Path(".gitignore").write_text(ignore_common + "\n!/test/\n!/test/**\n")
+        if other_conflict:
+            Path("source.dart").write_text("official unrelated change")
+        git("add", ".gitignore", str(audio), "source.dart")
+        git("commit", "-m", "official ignore and audio")
+        upstream = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+        return upstream, ignore, personal
+
+    def test_simultaneous_known_ignore_and_audio_conflicts_preserve_both(self):
+        upstream, ignore, _ = self.stage_combined_conflicts()
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), ignore)
+        audio = Path(prepare_btr_sync.AUDIO_SESSION_PATH).read_text()
+        additions = (
+            "import 'package:PiliPlus/utils/ios/airplay_helper.dart';\n",
+            "      if (IOSAirPlayHelper.isActive) {\n"
+            "        IOSAirPlayHelper.pause();\n"
+            "        return;\n"
+            "      }\n",
+            "    if (IOSAirPlayHelper.isActive) {\n"
+            "      _shouldResume = false;\n"
+            "      return; // AVKit handles interruptions during external playback.\n"
+            "    }\n",
+        )
+        for addition in additions:
+            self.assertEqual(audio.count(addition), 1)
+            audio = audio.replace(addition, "", 1)
+        official = (Path(__file__).resolve().parents[2] /
+                    "tool/tests/fixtures/audio_session_official.txt").read_text()
+        self.assertEqual(audio, official)
+        for sha in (upstream, self.author_base):
+            self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
+        self.assertEqual(git("status", "--porcelain"), "")
+
+    def assert_unknown_audio_conflict_stops(self, **changes):
+        upstream, ignore, personal = self.stage_combined_conflicts(**changes)
+        with self.assertRaisesRegex(ValueError, "manual resolution: lib/services/audio_session.dart"):
+            prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), ignore)
+        self.assertEqual(Path(prepare_btr_sync.AUDIO_SESSION_PATH).read_text(), personal)
+        self.assertEqual(git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_audio_conflict_with_unknown_official_changes_stops(self):
+        self.assert_unknown_audio_conflict_stops(official_extra="// unexpected official change\n")
+
+    def test_audio_conflict_with_unknown_personal_changes_stops(self):
+        self.assert_unknown_audio_conflict_stops(personal_extra="// unexpected personal change\n")
+
+    def test_unrelated_conflict_still_aborts_after_known_resolutions(self):
+        upstream, ignore, personal = self.stage_combined_conflicts(other_conflict=True)
+        with self.assertRaisesRegex(ValueError, "manual resolution: source.dart"):
+            prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(Path(".gitignore").read_text(), ignore)
+        self.assertEqual(Path(prepare_btr_sync.AUDIO_SESSION_PATH).read_text(), personal)
+        self.assertEqual(Path("source.dart").read_text(), "personal unrelated change")
+        self.assertEqual(git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_lagging_btr_author_does_not_revert_new_official_source(self):
         upstream = self.official()
         current = prepare_btr_sync.prepare(upstream, self.base, self.author_base)

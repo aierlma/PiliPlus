@@ -6,6 +6,9 @@ on:
     paths:
       - .gitignore
       - tool/prepare_btr_sync.py
+      - tool/tests/fixtures/audio_session_official.txt
+      - tool/tests/run_audio_session_contract.py
+      - lib/services/audio_session.dart
       - lib/utils/config_archive.dart
       - lib/utils/storage_pref.dart
       - lib/pages/setting/models/video_settings.dart
@@ -30,7 +33,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      UPSTREAM: e3aff4435e0df6d703b359b6999c6aa41a4fd678
+      UPSTREAM: d0e03529b6938aeb9aa290fcf6ba58d4e93a537a
       BTR_UPSTREAM: 97663e3ab5532b37748a6ec4c3567ae209a777d0
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +66,7 @@ jobs:
       - name: Verify preferences, BTR and complete application
         run: |
           python3 tool/make_btr_mirror.py
+          python3 tool/tests/run_audio_session_contract.py
           flutter test --no-pub --dart-define=BTR_SYNC_CANDIDATE=true test/pages/login/geetest/captcha_config_test.dart test/utils/storage_pref_test.dart test/pages/video_settings_sync_test.dart test/utils/video_quality_select_test.dart test/utils/audio_quality_select_test.dart test/utils/cdn_url_test.dart test/utils/ios_airplay_helper_test.dart test/utils/airplay_hls_test.dart test/standalone/btr_akamai_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
           dart tool/tests/btr_update_test.dart
           flutter analyze --no-pub --no-fatal-infos
