@@ -3,6 +3,13 @@ import argparse
 import subprocess
 from pathlib import Path
 
+AUDIO_SESSION_PATH = "lib/services/audio_session.dart"
+AUDIO_SESSION_STAGES = (
+    "3155b35c84e15d72be0043a49ff5f95368a75906",  # common
+    "e13121b6af38ac3758fb210dd7531e837e4082e0",  # personal AirPlay guards
+    "a90b531edb11701f9701bb299afc2f70483cd0f5",  # official audio callbacks
+)
+
 
 def git(*args, check=True):
     return subprocess.run(["git", *args], check=check, capture_output=True, text=True)
@@ -23,6 +30,41 @@ def resolve_preapplied_gitignore():
     return True
 
 
+def resolve_known_audio_session():
+    """Combine the reviewed upstream callbacks with the personal AirPlay guards."""
+    stages = [git("rev-parse", f":{stage}:{AUDIO_SESSION_PATH}", check=False)
+              for stage in (1, 2, 3)]
+    if any(result.returncode for result in stages):
+        return False
+    if tuple(result.stdout.strip() for result in stages) != AUDIO_SESSION_STAGES:
+        return False
+    official = git("show", f":3:{AUDIO_SESSION_PATH}").stdout
+    replacements = (
+        ("import 'package:PiliPlus/services/service_locator.dart';\n",
+         "import 'package:PiliPlus/services/service_locator.dart';\n"
+         "import 'package:PiliPlus/utils/ios/airplay_helper.dart';\n"),
+        ("    _session.becomingNoisyEventStream.listen((_) {\n",
+         "    _session.becomingNoisyEventStream.listen((_) {\n"
+         "      if (IOSAirPlayHelper.isActive) {\n"
+         "        IOSAirPlayHelper.pause();\n"
+         "        return;\n"
+         "      }\n"),
+        ("  void _onInterrupted(AudioInterruptionEvent event) {\n",
+         "  void _onInterrupted(AudioInterruptionEvent event) {\n"
+         "    if (IOSAirPlayHelper.isActive) {\n"
+         "      _shouldResume = false;\n"
+         "      return; // AVKit handles interruptions during external playback.\n"
+         "    }\n"),
+    )
+    if any(official.count(before) != 1 for before, _ in replacements):
+        return False
+    for before, after in replacements:
+        official = official.replace(before, after, 1)
+    Path(AUDIO_SESSION_PATH).write_text(official, encoding="utf-8")
+    git("add", "--", AUDIO_SESSION_PATH)
+    return True
+
+
 def prepare(upstream, base, btr_upstream):
     if git("rev-parse", "HEAD").stdout.strip() != base:
         raise ValueError("Personal branch moved since planning")
@@ -40,7 +82,12 @@ def prepare(upstream, base, btr_upstream):
             # Both source projects' workflows require separate personal review.
             git("restore", "--source=HEAD", "--staged", "--worktree", ".github/workflows")
             conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
-            if label == "official PiliPlus" and conflicts == ".gitignore" and resolve_preapplied_gitignore():
+            if label == "official PiliPlus":
+                conflict_paths = set(conflicts.splitlines())
+                if ".gitignore" in conflict_paths:
+                    resolve_preapplied_gitignore()
+                if AUDIO_SESSION_PATH in conflict_paths:
+                    resolve_known_audio_session()
                 conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
             merge_pending = git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode == 0
             if conflicts or (result.returncode and not merge_pending):
