@@ -111,6 +111,41 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
         self.assertEqual(git("status", "--porcelain"), "")
 
+    def test_video_controller_upstream_import_keeps_personal_painting(self):
+        # Replay the actual personal controller against the official import change.
+        personal = (Path(__file__).resolve().parents[2] / "lib/pages/video/controller.dart").read_text()
+        old = "import 'package:flutter/foundation.dart' show kDebugMode;\n"
+        new = "import 'package:flutter/foundation.dart' show kDebugMode, compute;\n"
+        painting = "import 'package:flutter/painting.dart' as painting;\n"
+        personal = personal.replace(new, old)
+        self.assertEqual(personal.count(old), 1)
+        self.assertEqual(personal.count(painting), 1)
+        common = personal.replace(painting, "")
+        path = Path("lib/pages/video/controller.dart")
+        git("checkout", "official")
+        path.parent.mkdir(parents=True)
+        path.write_text(common)
+        git("add", str(path))
+        git("commit", "-m", "common video controller")
+        git("checkout", "btr")
+        git("merge", "--no-edit", "official")
+        path.write_text(personal)
+        git("add", str(path))
+        git("commit", "-m", "personal painting import")
+        self.base = git("rev-parse", "HEAD")
+        git("checkout", "official")
+        path.write_text(common.replace(old, new))
+        git("add", str(path))
+        git("commit", "-m", "official subtitle compute import")
+        upstream = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+
+        candidate = prepare_btr_sync.prepare(upstream, self.base, self.author_base)
+        self.assertEqual(path.read_text(), personal.replace(old, new))
+        for sha in (upstream, self.author_base):
+            self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_official_tail_append_preserves_real_btr_preferences(self):
         # Reproduce issue #9 using the real personal Pref declarations, offline.
         mine_tabs = (
