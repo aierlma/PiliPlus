@@ -113,6 +113,14 @@ Future<void> main() async {
   session.interruptions.add(AudioInterruptionEvent(true, AudioInterruptionType.pause));
   session.interruptions.add(AudioInterruptionEvent(false, AudioInterruptionType.pause));
   await tick();
+  check(servicePauses, 1, 'do not pause an idle audio service');
+  check(player.pauses, 0, 'idle audio service does not fall back to local player');
+  check(player.plays, 0, 'idle audio service does not resume local player');
+
+  service.isPlaying = null;
+  session.interruptions.add(AudioInterruptionEvent(true, AudioInterruptionType.pause));
+  session.interruptions.add(AudioInterruptionEvent(false, AudioInterruptionType.pause));
+  await tick();
   check(player.pauses, 1, 'pause playing local controller');
   check(player.lastInterrupt, true, 'pause is marked as interruption');
   check(player.plays, 1, 'resume interrupted local controller');

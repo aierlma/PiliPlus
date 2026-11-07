@@ -1,0 +1,52 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:PiliPlus/models_new/video/video_play_info/subtitle.dart';
+import 'package:PiliPlus/models_new/video/video_play_info/view_point.dart';
+import 'package:PiliPlus/utils/path_utils.dart';
+import 'package:PiliPlus/utils/subtitle_utils.dart';
+import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as path;
+
+void main() {
+  test('cached subtitles retain their local path and convert to VTT', () async {
+    final directory = await Directory.systemTemp.createTemp('offline-subtitle-');
+    addTearDown(() async {
+      await directory.delete(recursive: true);
+    });
+    final cached = LocalSubtitle.fromCache([
+      {'id': 7, 'lan': 'en', 'lan_doc': 'English'},
+      {'id': 9, 'lan': 'zh-CN', 'lan_doc': 'Chinese'},
+    ], directory.path)!;
+    expect(cached.map((subtitle) => subtitle.lan), ['zh-CN', 'en']);
+    expect(
+      cached.first.path,
+      path.join(directory.path, PathUtils.subtitleDir, '9${PathUtils.subtitleExt}'),
+    );
+    final file = File(cached.first.path);
+    await file.parent.create(recursive: true);
+    await file.writeAsString(jsonEncode({
+      'body': [
+        {'from': 1.0, 'to': 2.5, 'content': ' offline caption '},
+      ],
+    }));
+    final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final vtt = await compute<List, String>(SubtitleUtils.json2Vtt, data['body'] as List);
+    expect(vtt, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.500\noffline caption');
+  });
+
+  test('cached viewpoints become bounded playback segments', () {
+    final points = ViewPoint.fromCache([
+      {'type': 2, 'from': 10, 'to': 30, 'content': 'Chapter', 'imgUrl': 'image'},
+      {'type': 2, 'from': 50, 'to': 90, 'content': 'End'},
+    ])!;
+    final first = points.first.toSegment(60);
+    expect(first.end, 0.5);
+    expect(first.from, 10);
+    expect(first.to, 30);
+    expect(first.title, 'Chapter');
+    expect(first.url, 'image');
+    expect(points.last.toSegment(60).end, 1.0);
+  });
+}
