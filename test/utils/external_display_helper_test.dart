@@ -131,4 +131,20 @@ void main() {
       expect(calls.where((call) => call.method == 'present'), hasLength(1));
     },
   );
+
+  test('danmaku clearing is sent only during an active session', () async {
+    IOSExternalDisplayHelper.clearDanmaku();
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.where((call) => call.method == 'clearDanmaku'), isEmpty);
+
+    final playback = present(4);
+    await Future<void>.delayed(Duration.zero);
+    await command('connected');
+    IOSExternalDisplayHelper.clearDanmaku();
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.where((call) => call.method == 'clearDanmaku'), hasLength(1));
+    await command('close');
+    await IOSExternalDisplayHelper.close();
+    await playback;
+  });
 }

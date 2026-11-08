@@ -62,6 +62,7 @@ import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
 import 'package:PiliPlus/utils/image_utils.dart';
+import 'package:PiliPlus/utils/ios/external_seek.dart';
 import 'package:PiliPlus/utils/max_screen_size.dart';
 import 'package:PiliPlus/utils/mobile_observer.dart';
 import 'package:PiliPlus/utils/num_utils.dart';
@@ -1498,7 +1499,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         onShowControls: detail.onCast,
         onTogglePlayback: () =>
             player.playerStatus.isPlaying ? player.pause() : player.play(),
-        onSeek: (value) => player.seekTo(value, isSeek: false),
+        onSeek: (value) => seekExternalPlayback(player.seekTo, value),
         onToggleDanmaku: player.enableShowDanmaku.toggle,
         onSubtitle: detail.setSubtitle,
         onDanmakuScale: detail.setExternalDanmakuScale,

@@ -68,6 +68,7 @@ import 'package:PiliPlus/utils/image_utils.dart';
 import 'package:PiliPlus/utils/ios/airplay_helper.dart';
 import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';
 import 'package:PiliPlus/utils/ios/external_display_helper.dart';
+import 'package:PiliPlus/utils/ios/external_seek.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/reply_scheme_helper.dart';
@@ -1833,13 +1834,13 @@ class VideoDetailController extends GetxController
               final milliseconds = command == 'skip'
                   ? plPlayerController.positionInMilliseconds + (value ?? 0)
                   : value ?? 0;
-              await plPlayerController.seekTo(
+              await seekExternalPlayback(
+                plPlayerController.seekTo,
                 Duration(
                   milliseconds: milliseconds
                       .clamp(0, plPlayerController.durationInMilliseconds)
                       .round(),
                 ),
-                isSeek: false,
               );
             case 'toggleDanmaku':
               plPlayerController.enableShowDanmaku.toggle();
@@ -1931,7 +1932,7 @@ class VideoDetailController extends GetxController
         );
         if (!isClosed && cid.value == castCid && player == currentPlayer) {
           // Returning from the system player keeps local playback paused.
-          await plPlayerController.seekTo(result.position, isSeek: false);
+          await seekExternalPlayback(plPlayerController.seekTo, result.position);
           if (result.error case final error?) SmartDialog.showToast(error);
         }
         return;
@@ -2160,9 +2161,8 @@ class VideoDetailController extends GetxController
         subtitleStyle: withDanmaku && !captionProbe ? danmakuStyle.nativeStyle : null,
       );
       if (!isClosed && cid.value == castCid && player == playerAtStart) {
-        // mpv is paused throughout AirPlay, so no new buffer event is
-        // guaranteed. A gesture seek would wait for that event indefinitely.
-        await plPlayerController.seekTo(result.position, isSeek: false);
+        // mpv is paused during AirPlay; do not wait for a new buffer event.
+        await seekExternalPlayback(plPlayerController.seekTo, result.position);
         if (result.error case final error?) SmartDialog.showToast(error);
       }
     } finally {
