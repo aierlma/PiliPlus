@@ -1,5 +1,6 @@
 """Merge two pinned sources into a local candidate; never push or publish here."""
 import argparse
+import re
 import subprocess
 from pathlib import Path
 
@@ -9,10 +10,52 @@ AUDIO_SESSION_STAGES = (
     "e13121b6af38ac3758fb210dd7531e837e4082e0",  # personal AirPlay guards
     "a90b531edb11701f9701bb299afc2f70483cd0f5",  # official audio callbacks
 )
+BTR_SEEK_PATH = "lib/plugin/pl_player/controller.dart"
+BTR_SEEK_STAGES = (
+    "f4f3d86a49e93e21a0f3545a524769a8df2cdf1d",
+    "bc0a4c53dc7c673105d3fae7c0d9c1dbd9c92474",
+    "693a6f1ad1a901d944c08d92fca815baaa5e20bd",
+)
+VIDEO_CONTROLLER_PATH = "lib/pages/video/controller.dart"
+VIDEO_CONTROLLER_STAGES = (
+    "65fcbc18cbbf3d7cb8be3480d4c7f6cd28fa035c",
+    "b8422d3cb69caa64133dfafff465e2408fc1e40f",
+    "e193c370aea577361c3609f73a30d66b74ca9514",
+)
+BTR_SEEK_PERSONAL = "    IOSExternalDisplayHelper.clearDanmaku();\n"
+BTR_SEEK_UPSTREAM = "    _notifySeekListeners(position);\n"
+VIDEO_PERSONAL_IMPORTS = (
+    "import 'package:PiliPlus/utils/image_utils.dart';\n"
+    "import 'package:PiliPlus/utils/ios/airplay_helper.dart';\n"
+    "import 'package:PiliPlus/utils/ios/airplay_danmaku.dart';\n"
+    "import 'package:PiliPlus/utils/ios/external_display_helper.dart';\n"
+    "import 'package:PiliPlus/utils/ios/external_seek.dart';\n"
+)
+VIDEO_SIZE_IMPORT = "import 'package:PiliPlus/utils/extension/size_ext.dart';\n"
 
 
 def git(*args, check=True):
     return subprocess.run(["git", *args], check=check, capture_output=True, text=True)
+
+
+def resolve_reviewed_conflict(path, expected_stages, source, personal, upstream, combined):
+    """Resolve exactly one reviewed hunk; refuse altered blobs or other hunks."""
+    stages = [git("rev-parse", f":{stage}:{path}", check=False) for stage in (1, 2, 3)]
+    if any(stage.returncode for stage in stages):
+        return False
+    if tuple(stage.stdout.strip() for stage in stages) != expected_stages:
+        return False
+    conflict = f"<<<<<<< HEAD\n{personal}=======\n{upstream}>>>>>>> {source}\n"
+    file = Path(path)
+    content = file.read_text(encoding="utf-8")
+    if content.count(conflict) != 1:
+        return False
+    resolved = content.replace(conflict, combined, 1)
+    if re.search(r"^(<<<<<<< |=======|>>>>>>> )", resolved, re.MULTILINE):
+        return False
+    file.write_text(resolved, encoding="utf-8")
+    git("add", "--", path)
+    return True
 
 
 def resolve_preapplied_gitignore():
@@ -82,13 +125,23 @@ def prepare(upstream, base, btr_upstream):
             # Both source projects' workflows require separate personal review.
             git("restore", "--source=HEAD", "--staged", "--worktree", ".github/workflows")
             conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+            conflict_paths = set(conflicts.splitlines())
+            if label == "BTR author" and BTR_SEEK_PATH in conflict_paths:
+                resolve_reviewed_conflict(
+                    BTR_SEEK_PATH, BTR_SEEK_STAGES, sha, BTR_SEEK_PERSONAL,
+                    BTR_SEEK_UPSTREAM, BTR_SEEK_PERSONAL + BTR_SEEK_UPSTREAM,
+                )
             if label == "official PiliPlus":
-                conflict_paths = set(conflicts.splitlines())
                 if ".gitignore" in conflict_paths:
                     resolve_preapplied_gitignore()
                 if AUDIO_SESSION_PATH in conflict_paths:
                     resolve_known_audio_session()
-                conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
+                if VIDEO_CONTROLLER_PATH in conflict_paths:
+                    resolve_reviewed_conflict(
+                        VIDEO_CONTROLLER_PATH, VIDEO_CONTROLLER_STAGES, sha,
+                        VIDEO_SIZE_IMPORT + VIDEO_PERSONAL_IMPORTS, "", VIDEO_PERSONAL_IMPORTS,
+                    )
+            conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.strip()
             merge_pending = git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode == 0
             if conflicts or (result.returncode and not merge_pending):
                 raise ValueError(f"{label} merge requires manual resolution: {conflicts or result.stderr}")

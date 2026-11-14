@@ -111,6 +111,105 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
         self.assertEqual(git("status", "--porcelain"), "")
 
+    def stage_reviewed_video_conflicts(self, *, changed_seek=False, changed_video=False,
+                                       other_conflict=False):
+        seek = Path(prepare_btr_sync.BTR_SEEK_PATH)
+        video = Path(prepare_btr_sync.VIDEO_CONTROLLER_PATH)
+        seek_common = ("class Player {\n  void seekTo(Duration position) {\n"
+                       "    danmakuController?.clear();\n    player.seek(position);\n  }\n"
+                       "\n\n\n\n\n}\n")
+        clear = "    danmakuController?.clear();\n"
+        seek_personal = seek_common.replace(clear, clear + prepare_btr_sync.BTR_SEEK_PERSONAL)
+        seek_author = seek_common.replace(clear, clear + prepare_btr_sync.BTR_SEEK_UPSTREAM)
+        seek_author = seek_author.replace("\n\n\n\n\n}",
+            "\n\n  void _notifySeekListeners(Duration position) {}\n\n\n}")
+        video_common = (prepare_btr_sync.VIDEO_SIZE_IMPORT +
+                        "import 'package:flutter/widgets.dart';\n\n\n\n\n\n"
+                        "bool portrait(context) => oldPortrait(context);\n")
+        video_personal = video_common.replace(prepare_btr_sync.VIDEO_SIZE_IMPORT,
+            prepare_btr_sync.VIDEO_SIZE_IMPORT + prepare_btr_sync.VIDEO_PERSONAL_IMPORTS)
+        video_official = video_common.replace(prepare_btr_sync.VIDEO_SIZE_IMPORT, "").replace(
+            "oldPortrait(context)", "MediaQuery.isPortraitOf(context)")
+        def blob_id(content):
+            return subprocess.check_output(["git", "hash-object", "--stdin"], input=content, text=True).strip()
+        self.seek_stages = tuple(map(blob_id, (seek_common, seek_personal, seek_author)))
+        self.video_stages = tuple(map(blob_id, (video_common, video_personal, video_official)))
+        git("checkout", "official")
+        seek.parent.mkdir(parents=True, exist_ok=True)
+        video.parent.mkdir(parents=True, exist_ok=True)
+        seek.write_text(seek_common)
+        video.write_text(video_common)
+        git("add", str(seek), str(video))
+        git("commit", "-m", "shared video sources")
+        git("checkout", "btr-author")
+        git("merge", "--no-edit", "official")
+        seek.write_text(seek_author + ("\n// unexpected author change\n" if changed_seek else ""))
+        git("add", str(seek))
+        git("commit", "-m", "BTR seek listener")
+        author = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+        git("merge", "--no-edit", "official")
+        seek.write_text(seek_personal)
+        video.write_text(video_personal)
+        if other_conflict:
+            Path("source.dart").write_text("personal unrelated change")
+        git("add", str(seek), str(video), "source.dart")
+        git("commit", "-m", "personal video changes")
+        self.base = git("rev-parse", "HEAD")
+        git("checkout", "official")
+        video.write_text(video_official + ("\n// unexpected official change\n" if changed_video else ""))
+        if other_conflict:
+            Path("source.dart").write_text("official unrelated change")
+        git("add", str(video), "source.dart")
+        git("commit", "-m", "official video changes")
+        upstream = git("rev-parse", "HEAD")
+        git("checkout", "btr")
+        return upstream, author, seek_personal, video_personal
+
+    def test_reviewed_seek_and_import_conflicts_preserve_both_sources(self):
+        upstream, author, _, _ = self.stage_reviewed_video_conflicts()
+        with patch.object(prepare_btr_sync, "BTR_SEEK_STAGES", self.seek_stages), \
+             patch.object(prepare_btr_sync, "VIDEO_CONTROLLER_STAGES", self.video_stages):
+            candidate = prepare_btr_sync.prepare(upstream, self.base, author)
+        seek = Path(prepare_btr_sync.BTR_SEEK_PATH).read_text()
+        combined = prepare_btr_sync.BTR_SEEK_PERSONAL + prepare_btr_sync.BTR_SEEK_UPSTREAM
+        self.assertEqual(seek.count(combined), 1)
+        self.assertIn("void _notifySeekListeners(Duration position)", seek)
+        video = Path(prepare_btr_sync.VIDEO_CONTROLLER_PATH).read_text()
+        self.assertIn(prepare_btr_sync.VIDEO_PERSONAL_IMPORTS, video)
+        self.assertNotIn(prepare_btr_sync.VIDEO_SIZE_IMPORT, video)
+        self.assertIn("MediaQuery.isPortraitOf(context)", video)
+        for sha in (upstream, author):
+            self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", sha, candidate]).returncode, 0)
+        self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_changed_seek_or_import_blobs_abort_and_restore_base(self):
+        for changed in ("changed_seek", "changed_video"):
+            with self.subTest(changed=changed):
+                upstream, author, seek, video = self.stage_reviewed_video_conflicts(**{changed: True})
+                with patch.object(prepare_btr_sync, "BTR_SEEK_STAGES", self.seek_stages), \
+                     patch.object(prepare_btr_sync, "VIDEO_CONTROLLER_STAGES", self.video_stages):
+                    with self.assertRaisesRegex(ValueError, "merge requires manual resolution"):
+                        prepare_btr_sync.prepare(upstream, self.base, author)
+                self.assertEqual(git("rev-parse", "HEAD"), self.base)
+                self.assertEqual(Path(prepare_btr_sync.BTR_SEEK_PATH).read_text(), seek)
+                self.assertEqual(Path(prepare_btr_sync.VIDEO_CONTROLLER_PATH).read_text(), video)
+                self.assertEqual(git("status", "--porcelain"), "")
+                # Each case needs an independent fixture.
+                if changed == "changed_seek":
+                    self.tearDown()
+                    self.setUp()
+
+    def test_reviewed_video_conflicts_do_not_hide_unrelated_conflict(self):
+        upstream, author, _, _ = self.stage_reviewed_video_conflicts(other_conflict=True)
+        with patch.object(prepare_btr_sync, "BTR_SEEK_STAGES", self.seek_stages), \
+             patch.object(prepare_btr_sync, "VIDEO_CONTROLLER_STAGES", self.video_stages):
+            with self.assertRaisesRegex(ValueError, "manual resolution: source.dart"):
+                prepare_btr_sync.prepare(upstream, self.base, author)
+        self.assertEqual(git("rev-parse", "HEAD"), self.base)
+        self.assertEqual(Path("source.dart").read_text(), "personal unrelated change")
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_video_controller_upstream_import_keeps_personal_painting(self):
         # Replay the actual personal controller against the official import change.
         personal = (Path(__file__).resolve().parents[2] / "lib/pages/video/controller.dart").read_text()

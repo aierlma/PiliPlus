@@ -14,6 +14,7 @@ ADAPTER = ROOT / "lib/utils/ios/external_seek.dart"
 
 STUBS = r"""
 final events = <String>[];
+typedef ValueChanged<T> = void Function(T value);
 const kDebugMode = false;
 void debugPrint(String message) {}
 
@@ -51,6 +52,9 @@ class PlPlayerController {
   int _playerCount = 1;
   int _heartDuration = -1;
   int positionInMilliseconds = 10000;
+  bool isLive = false;
+  bool isFileSource = false;
+  final Set<ValueChanged<Duration>> _seekListeners = {};
   final duration = FakeDuration();
   final _videoPlayerController = FakeVideoPlayer();
   final danmakuController = FakeDanmaku();
@@ -74,15 +78,18 @@ void check(bool condition, String message) {
   if (!condition) throw StateError('$message; events=$events');
 }
 Future<void> tick() => Future<void>.delayed(Duration.zero);
-void checkSeek(int ms, String message) {
+void checkSeek(int ms, String message, {bool notified = true}) {
+  final cancel = hasNotifier && notified ? 'cancel-stale:$ms,' : '';
   check(events.join(',') ==
-      'local-clear,external-clear,seek:$ms,pip:$ms', message);
+      'local-clear,external-clear,${cancel}seek:$ms,pip:$ms', message);
 }
 
 Future<void> main() async {
   final controller = PlPlayerController();
   PlPlayerController.instance = controller;
   final video = controller._videoPlayerController;
+  controller._seekListeners.add((position) =>
+      events.add('cancel-stale:${position.inMilliseconds}'));
 
   // No buffer event is ever emitted: external seeks must still complete.
   await seekExternalPlayback(controller.seekTo, const Duration(seconds: 12))
@@ -122,7 +129,8 @@ Future<void> main() async {
   final operation = seekExternalPlayback(controller.seekTo, const Duration(seconds: 4))
       .then((_) => completed = true);
   await tick();
-  check(events.join(',') == 'local-clear,external-clear,seek:4000',
+  final cancel = hasNotifier ? 'cancel-stale:4000,' : '';
+  check(events.join(',') == 'local-clear,external-clear,${cancel}seek:4000',
       'PiP update follows the underlying player seek');
   check(completed == legacy, 'preserve each API\'s completion behavior');
   video.barrier!.complete();
@@ -136,6 +144,22 @@ Future<void> main() async {
   await tick();
   checkSeek(16000, 'PiP skip uses the relative target');
   check(controller._heartDuration == 16, 'PiP skip updates heartbeat position');
+
+  if (hasNotifier) {
+    events.clear();
+    controller.isLive = true;
+    await seekExternalPlayback(controller.seekTo, const Duration(seconds: 7));
+    await tick();
+    checkSeek(7000, 'live seek does not cancel BTR chunks', notified: false);
+    controller.isLive = false;
+
+    events.clear();
+    controller.isFileSource = true;
+    await seekExternalPlayback(controller.seekTo, const Duration(seconds: 8));
+    await tick();
+    checkSeek(8000, 'local file seek does not cancel BTR chunks', notified: false);
+    controller.isFileSource = false;
+  }
 
   Future<void> fails(Duration _) async => throw StateError('expected failure');
   try {
@@ -166,6 +190,10 @@ def main():
     start = player.index("  Future<void> seek(Duration position, {bool isSeek = false}) async {"
                          if legacy else "  Future<void> seekTo(Duration position) async {")
     methods = player[start:player.index("\n  /// 设置倍速", start)]
+    notifier_start = player.find("  void _notifySeekListeners(Duration position) {")
+    has_notifier = notifier_start >= 0
+    notifier = (player[notifier_start:player.index("\n  Timer? _wakeLockTimer;", notifier_start)]
+                if has_notifier else "")
     pip = source(PIP, args.legacy_ref)
     start = pip.index("      case 'skip':\n")
     pip_case = pip[start:pip.index("\n    }\n  }", start)]
@@ -176,10 +204,11 @@ def main():
     header = ("import 'dart:async';\n"
               f"import '{ADAPTER.as_uri()}';\n"
               f"const legacy = {'true' if legacy else 'false'};\n"
+              f"const hasNotifier = {'true' if has_notifier else 'false'};\n"
               f"const mode = '{mode}';\n")
     with tempfile.TemporaryDirectory() as directory:
         program = Path(directory) / "external_seek_contract.dart"
-        program.write_text(header + STUBS + methods + wrapper + CHECKS, encoding="utf-8")
+        program.write_text(header + STUBS + notifier + methods + wrapper + CHECKS, encoding="utf-8")
         subprocess.run(["dart", str(program)], check=True, cwd=ROOT)
 
 
