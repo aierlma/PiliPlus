@@ -10,12 +10,14 @@ on:
       - tool/tests/fixtures/video_offline_sync_test.dart.txt
       - tool/tests/run_audio_session_contract.py
       - tool/tests/run_external_seek_contract.py
+      - tool/tests/run_btr_seek_contract.py
       - lib/services/audio_session.dart
       - lib/utils/config_archive.dart
       - lib/utils/storage_pref.dart
       - lib/pages/setting/models/video_settings.dart
       - lib/pages/video/controller.dart
       - lib/pages/video/view.dart
+      - lib/plugin/pl_player/controller.dart
       - lib/utils/ios/external_seek.dart
       - test/utils/external_display_helper_test.dart
       - test/utils/external_display_app_test.dart
@@ -40,8 +42,8 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      UPSTREAM: 4fce4bb5a35c425aee759ef9263352316a29e355
-      BTR_UPSTREAM: 97663e3ab5532b37748a6ec4c3567ae209a777d0
+      UPSTREAM: 217fb54f51f6764176319bbdedab2a7522d75401
+      BTR_UPSTREAM: e133cd90fe3a518aa986e58145912d21bfe8706f
     steps:
       - uses: actions/checkout@v7
         with:
@@ -89,6 +91,7 @@ jobs:
           python3 tool/tests/run_audio_session_contract.py
           python3 tool/tests/run_external_seek_contract.py --legacy-ref "$LEGACY_SEEK_REF"
           python3 tool/tests/run_external_seek_contract.py
+          python3 tool/tests/run_btr_seek_contract.py
           cp tool/tests/fixtures/video_offline_sync_test.dart.txt test/pages/video_offline_sync_test.dart
           flutter test --no-pub --dart-define=BTR_SYNC_CANDIDATE=true test/pages/login/geetest/captcha_config_test.dart test/pages/video_offline_sync_test.dart test/utils/dlna_utils_test.dart test/utils/storage_pref_test.dart test/pages/video_settings_sync_test.dart test/utils/video_quality_select_test.dart test/utils/audio_quality_select_test.dart test/utils/cdn_url_test.dart test/utils/ios_airplay_helper_test.dart test/utils/airplay_hls_test.dart test/utils/external_display_helper_test.dart test/utils/external_display_app_test.dart test/standalone/btr_akamai_test.dart test/standalone/btr_bitrate_unit_test.dart test/standalone/btr_cdn_racer_test.dart test/standalone/btr_round22_test.dart test/standalone/btr_round23_test.dart test/standalone/btr_round26_test.dart
           dart tool/tests/btr_update_test.dart
