@@ -451,6 +451,7 @@ class VideoDetailController extends GetxController
           ? 1
           : 0,
     );
+    plPlayerController.addSeekListener(_onPlayerSeek);
   }
 
   Future<void> getMediaList({
@@ -601,6 +602,15 @@ class VideoDetailController extends GetxController
       defaultST?.inMilliseconds ?? plPlayerController.positionInMilliseconds;
   @override
   Future<void> seekTo(Duration duration) => plPlayerController.seekTo(duration);
+
+  /// R5-B：视频 seek 统一协同入口（进度条拖动、横滑手势、双击快进退、键盘方向键、
+  /// 章节/评论/AI大纲/弹幕跳转、空降助手跳过、播完重播、系统通知栏/PiP 等全部汇总至 PlPlayerController 触发此处）
+  void _onPlayerSeek(Duration position) {
+    if (isFileSource || plPlayerController.cid != cid.value) {
+      return;
+    }
+    BtrProxyServer.instance.notifySeek(position);
+  }
 
   @override
   Widget buildItem(Object item, Animation<double> animation) {
@@ -1376,6 +1386,7 @@ class VideoDetailController extends GetxController
       ..dispose();
     subtitles.clear();
     vttSubtitles.clear();
+    plPlayerController.removeSeekListener(_onPlayerSeek);
     BtrProxyServer.instance.scheduleStop();
     super.onClose();
   }
